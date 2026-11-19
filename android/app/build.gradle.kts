@@ -2,6 +2,8 @@ plugins {
     id("com.android.application")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
+    // WinBox M1：Chaquopy，把 CPython 3.12 打进 APK 供 py 蜘蛛使用。
+    id("com.chaquo.python")
 }
 
 android {
@@ -68,4 +70,29 @@ dependencies {
 
 flutter {
     source = "../.."
+}
+
+// WinBox M1：Android 端 py 蜘蛛的 CPython 运行时（Chaquopy 17.2）。
+// Python 3.12（64 位，与桌面端 3.11 的 py 源兼容：标准库 + requests 族）。
+// pip 只装 py 源实际用到的纯 Python / 已有 Android wheel 的包；lxml、
+// pycryptodome 在 Chaquopy 仓库有 Android wheel，requests 族为纯 Python。
+chaquopy {
+    defaultConfig {
+        version = "3.12"
+        pip {
+            install("requests")
+            install("urllib3")
+            install("certifi")
+            install("charset_normalizer")
+            install("idna")
+            install("beautifulsoup4")
+            install("lxml")
+            install("pycryptodome")
+        }
+    }
+    // 只打 arm64：与 `flutter build apk --target-platform android-arm64` 一致，
+    // 避免 x86/x86_64 的 Python 运行时白白增大 APK。
+    ndk {
+        abiFilters("arm64-v8a")
+    }
 }
