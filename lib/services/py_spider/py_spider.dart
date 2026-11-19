@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:crypto/crypto.dart' as crypto;
+import 'package:flutter/services.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
@@ -43,7 +44,14 @@ class SpiderProxyResult {
 /// TVBox Python 蜘蛛（type=3，api 以 .py 结尾）。
 ///
 /// 脚本下载到本地缓存，然后交给随包 runner.py + 按需安装的嵌入式 Python 执行。
+/// WinBox M1（Android）：Chaquopy 把 CPython 3.12 打进 APK，py 蜘蛛走
+/// MethodChannel "com.kniephos.kniephos/py_spider" 调用 Kotlin 侧的 Chaquopy，
+/// 不再找 python.exe / 不再下载运行时。常驻取流（--hold）暂不支持，见 _invokeHold。
 class PySpiderService {
+  /// Android 端 Chaquopy 桥（Kotlin PySpiderPlugin）。
+  static const _androidChannel = MethodChannel(
+    'com.kniephos.kniephos/py_spider',
+  );
   PySpiderService({PyRuntime? runtime, this.driveTokens})
     : _runtimeOverride = runtime;
 
@@ -325,6 +333,18 @@ class PySpiderService {
   /// 运行时 / 脚本 / 类名等公共准备（一次性调用与常驻取流共用）。
   Future<({Directory dir, String exe, File script, String cls, String ext})>
   _prepare(SourceBean site) async {
+    // WinBox M1（Android）：Chaquopy 运行时随包，不下载、不找 python.exe。
+    if (Platform.isAndroid) {
+      final script = await _scriptFile(site);
+      final support = await getApplicationSupportDirectory();
+      return (
+        dir: Directory(support.path),
+        exe: '',
+        script: script,
+        cls: _className(site.api),
+        ext: enrichSpiderExt(site.ext, driveTokens?.call() ?? const {}),
+      );
+    }
     if (!await runtime.installed()) {
       final result = await RuntimeInstallPrompt.instance.ensure(
         RuntimeExtension.python,
@@ -367,6 +387,26 @@ class PySpiderService {
     String method,
     List<String> args,
   ) async {
+    // WinBox M1（Android）：走 Chaquopy 桥，不起 python.exe 子进程。
+    if (Platform.isAndroid) {
+      final ready = await _prepare(site);
+      try {
+        final out = await _androidChannel.invokeMethod<String>('invoke', {
+          'scriptPath': ready.script.path,
+          'className': ready.cls,
+          'method': method,
+          'ext': ready.ext,
+          'argsJson': jsonEncode(args),
+        }).timeout(Duration(seconds: site.timeout + 30));
+        final text = (out ?? '').trim();
+        if (text.isEmpty) throw SourceException('PY 蜘蛛没有返回结果');
+        return text;
+      } on PlatformException catch (e) {
+        throw SourceException(_errorText('', e.message ?? '$e'));
+      } on TimeoutException {
+        throw SourceException('PY 蜘蛛执行超时（$method）');
+      }
+    }
     final ready = await _prepare(site);
     final arguments = <String>[
       '-X',
@@ -405,11 +445,19 @@ class PySpiderService {
   }
 
   /// 常驻取流：`runner.py --hold` 返回一次结果后继续活着，供脚本内建的本机流服务取流。
+  /// WinBox M1（Android）：Chaquopy 内没有进程概念，--hold 暂不支持，退化为
+  /// 一次性调用；指向脚本本机取流服务的播放地址在 Android 上暂时播不了，
+  /// 直链 / 解析页不受影响。后续如需支持，需在 Kotlin 侧常驻 Chaquopy 线程
+  /// + 本机 HTTP 服务，单列后续任务。
   Future<String> _invokeHold(
     SourceBean site,
     String method,
     List<String> args,
   ) async {
+    if (Platform.isAndroid) {
+      AppLog.w('py', '--hold 在 Android 上暂不支持，退化为一次性调用 method=$method');
+      return _invoke(site, method, args);
+    }
     final ready = await _prepare(site);
     final host = await _PyPlayHost.start(
       exe: ready.exe,

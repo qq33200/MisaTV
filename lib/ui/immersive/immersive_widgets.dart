@@ -636,9 +636,9 @@ class _ImmersiveCardState extends State<ImmersiveCard> {
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(12),
                   child: AspectRatio(
-                    // 沉浸货架 / 搜索 / 历史 / 收藏统一用竖版海报，
-                    // 只有 Hero 与详情页背景才走横图补图逻辑。
-                    aspectRatio: 2 / 3,
+                    // WinBox 横封面：沉浸货架 / 搜索 / 历史 / 收藏统一用 16:9 横图
+                    // （上游默认竖版 2/3；Win-Box Windows 版同款补丁，卡片约 200px）。
+                    aspectRatio: 16 / 9,
                     child: Stack(
                       fit: StackFit.expand,
                       children: [
