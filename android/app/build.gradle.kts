@@ -29,6 +29,10 @@ android {
         // flag during build.
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+        // Chaquopy 的 CPython 是原生组件：ABI 必须在 android.defaultConfig.ndk 里限制。
+        ndk {
+            abiFilters += listOf("arm64-v8a")
+        }
     }
 
     buildTypes {
@@ -89,10 +93,4 @@ chaquopy {
             install("lxml")
             install("pycryptodome")
         }
-    }
-    // 只打 arm64：与 `flutter build apk --target-platform android-arm64` 一致，
-    // 避免 x86/x86_64 的 Python 运行时白白增大 APK。
-    ndk {
-        abiFilters("arm64-v8a")
-    }
-}
+    }}
