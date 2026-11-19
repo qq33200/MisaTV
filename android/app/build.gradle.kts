@@ -82,7 +82,9 @@ flutter {
 // pycryptodome 在 Chaquopy 仓库有 Android wheel，requests 族为纯 Python。
 chaquopy {
     defaultConfig {
-        version = "3.12"
+        // Python 3.11 同时提供 arm64-v8a 与 armeabi-v7a 运行时；Flutter 在 debug
+        // variant 仍可能带入 32 位 ABI，用 3.12 会在配置期直接报 ABI 不受支持。
+        version = "3.11"
         pip {
             install("requests")
             install("urllib3")
