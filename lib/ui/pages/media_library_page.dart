@@ -500,8 +500,10 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
               : GridView.builder(
                   padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
                   gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-                    maxCrossAxisExtent: 160,
-                    childAspectRatio: 0.60,
+                    // WinBox 横封面：卡片约 200px 宽、16:9 横图 + 标题，
+                    // 单元格宽高比约 1.3（上游默认 160px、0.60 竖版）。
+                    maxCrossAxisExtent: 200,
+                    childAspectRatio: 1.3,
                     crossAxisSpacing: 12,
                     mainAxisSpacing: 12,
                   ),
