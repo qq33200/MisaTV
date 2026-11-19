@@ -30,7 +30,7 @@ flutter_inappwebview 的 proguard 补丁、R8 后校验 CatVod 宿主类、shell
 
 顺序按依赖排，先壳后功能：
 
-1. **M0 壳能构建（先行）**：fork 落地 → Actions 手动触发上游 workflow 原样构建 → 产出 arm64 release APK（记录大小、构建时间、下载链接）。只标“仅构建通过”，不做真机宣称。
+1. **M0 基线（已修正 2026-11-20 02:21，用户提醒）**：上游 Releases 已有现成 Android APK，不用先从 fork 构建。基线 = 上游 MisaTV 1.2.0 的 `MisaTV-android-arm64.apk`，102,089,245 字节（约 97MB），2026-11-18 发布，下载：https://github.com/yagami-hue/MisaTV/releases/download/v1.2.0/MisaTV-android-arm64.apk。先由 WorkBuddy/用户装到真机，实测 jar/js 源、file:// 加载、封面布局，确认 py 源是否如源码判断那样不可用。fork 的 Actions 构建留到开始改代码（M1–M3）时再跑。
 2. **M1 py 源可加载（最难，见第 5 节风险）**：先做技术验证，再写代码。Android 端 py 蜘蛛目前是**缺失能力**，不是现成能力。
 3. **M2 PikPak 分享解析**：把 `source-samples/pikpak-mobile.py` 与 `pikpak-winbox.py` 合流为一份，适配 Android 存储权限（`/sdcard/Download/` 的 `file://` 加载，上游 `lib/core/utils/file_url.dart` 已有 file:// 互转）与代理设置；搜索范围过滤按 `patch-search-scope.py` 的 `pikpakLink` 判断移植。
 4. **M3 横封面 16:9**：Flutter 渲染层改，不是复用 CSS。上游海报卡默认是 2/3（`lib/ui/immersive/immersive_widgets.dart:641`、`lib/ui/pages/detail_page.dart:2572` 的 `AspectRatio(aspectRatio: 2/3)`，媒体库 `childAspectRatio: 0.60`），改成 16/9、卡片约 200px；封面自适应合成（640×360，完整海报居中+两侧模糊）用 Dart 图像库/原生插件重做，不搬 Windows 的 crop_service.py + 9917 端口方案。
@@ -46,7 +46,7 @@ P1 跟进：py 下载保 tk（核对 MisaTV 自身订阅 URL query 是否完整�
 **Android 端 py 蜘蛛目前不可用，是 P0 最大风险点。**
 - `lib/services/py_spider/py_spider.dart:344` 写死找 `python.exe`，用 `Process.run` 执行；`lib/services/runtime_extension.dart` 明确写着 Python/JVM/加固壳运行时“只在 Windows 桌面端提供”（`supported` 要求 `TargetPlatform.windows`）。
 - `lib/services/py_spider/py_runtime.dart` 的嵌入式 Python 是 Windows amd64 专属（python-3.11.6-embed-amd64.zip + win_amd64 wheel），Android 上没有对应运行时，仓库里也没有 Chaquopy。
-- 可选方案（需做 spike 再定）：(a) Chaquopy 嵌入 Python 3.10（用户手机上 FongMi 壳就是这条路，交接文档 §2.3 有静态分析记录）；(b) 自带 aarch64 CPython；(c) py 逻辑改由 Dart/服务端承担。三种成本差很多，M1 之前必须先验证一种能跑通 `pikpak.py`/`magnet.py`，否则 P0 无法闭环。
+- 可选方案（已定，2026-11-20 实施中）：**Chaquopy 17.2 + CPython 3.12**（支持 AGP 7.3–9.5，与 MisaTV 的 AGP 9.1.0 兼容；Chaquopy 12.0.1 起免费开源）。实现在 fork main 的 winbox-p0 一批改动里：`android/app/src/main/python/winbox_spider.py`（复用 runner.py 的调用语义，函数式入口）+ `base/spider.py` 随包、`PySpiderPlugin.kt`（MethodChannel `com.kniephos.kniephos/py_spider`）+ `py_spider.dart` 的 Android 分支（走 Chaquopy，不找 python.exe）。限制：常驻取流 `--hold` 暂不支持（Chaquopy 内无进程概念），指向脚本本机取流服务的播放地址暂时播不了，直链不受影响。jar 蜘蛛 Android 已有 DexClassLoader 路径，JS 蜘蛛是 Dart 层，问题小。
 - 其余：jar 蜘蛛 Android 已有 `jar_spider_android.dart`（ART/DexClassLoader），JS 蜘蛛 QuickJS 是 Dart 层，跨平台问题小。
 
 ## 6. 明确不移植
