@@ -2546,8 +2546,9 @@ class _DetailHeader extends StatelessWidget {
         : coverUrl == fallbackCover
         ? fallbackCoverHeaders
         : const <String, String>{};
-    final posterWidth = narrow ? 170.0 : 210.0;
-    final posterHeight = posterWidth * 1.5;
+    // WinBox 横封面：详情海报改 16:9 横图（上游默认竖版 2/3，宽 170/210）。
+    final posterWidth = narrow ? 280.0 : 360.0;
+    final posterHeight = posterWidth * 9 / 16;
     final poster = MouseRegion(
       cursor: coverUrl.isEmpty
           ? SystemMouseCursors.basic
@@ -2569,7 +2570,8 @@ class _DetailHeader extends StatelessWidget {
           child: ClipRRect(
             borderRadius: BorderRadius.circular(20),
             child: AspectRatio(
-              aspectRatio: 2 / 3,
+              // WinBox 横封面：16:9（上游默认竖版 2/3）。
+              aspectRatio: 16 / 9,
               child: coverUrl.isEmpty
                   ? Container(
                       color: theme.colorScheme.primary.withValues(alpha: 0.18),
