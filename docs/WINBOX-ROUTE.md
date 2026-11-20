@@ -32,7 +32,7 @@ flutter_inappwebview 的 proguard 补丁、R8 后校验 CatVod 宿主类、shell
 
 1. **M0 基线（已修正 2026-11-20 02:21，用户提醒）**：上游 Releases 已有现成 Android APK，不用先从 fork 构建。基线 = 上游 MisaTV 1.2.0 的 `MisaTV-android-arm64.apk`，102,089,245 字节（约 97MB），2026-11-18 发布，下载：https://github.com/yagami-hue/MisaTV/releases/download/v1.2.0/MisaTV-android-arm64.apk。先由 WorkBuddy/用户装到真机，实测 jar/js 源、file:// 加载、封面布局，确认 py 源是否如源码判断那样不可用。fork 的 Actions 构建留到开始改代码（M1–M3）时再跑。
 2. **M1 py 源可加载（最难，见第 5 节风险）**：先做技术验证，再写代码。Android 端 py 蜘蛛目前是**缺失能力**，不是现成能力。
-3. **M2 PikPak 分享解析**：把 `source-samples/pikpak-mobile.py` 与 `pikpak-winbox.py` 合流为一份，适配 Android 存储权限（`/sdcard/Download/` 的 `file://` 加载，上游 `lib/core/utils/file_url.dart` 已有 file:// 互转）与代理设置；搜索范围过滤按 `patch-search-scope.py` 的 `pikpakLink` 判断移植。
+3. **M2 PikPak 分享解析（已实现 2026-11-20，本地待验收）**：`pikpak-mobile.py` 就是 Android 版（不用跟 winbox 版合流——它已经按 `os.name != 'nt'` 判断手机路径：封面直链、自动读 App 的 `TV/proxy.json` 代理、常见本地代理端口探测、直连兜底），纯标准库，Chaquopy 不用再装依赖。随包内置：`assets/python_sources/pikpak.py`（= pikpak-mobile.py 原样）+ `magnet.py`，pubspec 已声明；`py_spider.dart` 新增 `asset://` 加载——站点 api 填 `asset://python_sources/pikpak.py` 就行，离线可用、版本跟 APK 走，不用下载。本地验证：走 Chaquopy 同款 `winbox_spider.invoke` 调 homeContent / categoryContent（help、recent）都正常返回；init 时 ext 里填了 proxy 就跳过自动探测。注意：脚本里 127.0.0.1:9978 的 import-csv / galleryopen 两个调用是桌面专属，在手机上会静默失败（已 try/except），不影响播放；magnet.py 要 Win-Box 内置 aria2 + /bt 中继，Android 上 assets/aria2 只有 README、没有引擎，磁力播放暂不可用，等 MisaTV 的 aria2 方案再定。搜索范围过滤（patch-search-scope.py 的 pikpakLink 判断）尚未移植，算 M2 剩余小项。
 4. **M3 横封面 16:9**：Flutter 渲染层改，不是复用 CSS。上游海报卡默认是 2/3（`lib/ui/immersive/immersive_widgets.dart:641`、`lib/ui/pages/detail_page.dart:2572` 的 `AspectRatio(aspectRatio: 2/3)`，媒体库 `childAspectRatio: 0.60`），改成 16/9、卡片约 200px；封面自适应合成（640×360，完整海报居中+两侧模糊）用 Dart 图像库/原生插件重做，不搬 Windows 的 crop_service.py + 9917 端口方案。
 
 P1 跟进：py 下载保 tk（核对 MisaTV 自身订阅 URL query 是否完整保留，若有同款 bug 按 `winbox_patch.py` 锚点在 Dart 侧修）、磁力解析（`magnet.py` 的 infoHash 计算，确认 Android 上 aria2c 是否随包/可下载）、封面自适应。
@@ -80,3 +80,35 @@ P1 跟进：py 下载保 tk（核对 MisaTV 自身订阅 URL query 是否完整�
 - 不主动抓取任何订阅 URL 或 py URL 做验证（会触发门禁封号）；本次只做静态代码核查与本地克隆。
 - Issue、代码、README、提交记录里不写任何 PAT / API Key / Cookie / 订阅 token。
 - 直接推进到 APK 产物或明确阻塞点，不以“建议用现成壳”作最终结论。
+
+## 10. 当前状态（2026-11-20 13:32，本地构建，待用户/WorkBuddy 真机验收）
+
+**最新 APK：WinBox-1.2.0-arm64.apk，156 MB，MD5 5ba3e5ac6c8ec59a57bd03c270001fe7，包名 com.winbox，versionCode 14，versionName 1.2.0。** 本地构建（Flutter 3.47.9 + JDK 17 + Chaquopy 3.11），未走 Actions。APK 太大（>100MB）不能直接 git push，见第 11 节。
+
+已实现（都在本地构建里，待验收后统一推 fork main）：
+- M1 Chaquopy：py 源可加载（winbox_spider.py + PySpiderPlugin.kt + py_spider.dart Android 分支）；`--hold` 取流暂不支持。
+- M2 PikPak + magnet：assets/python_sources/pikpak.py（= pikpak-mobile.py）+ magnet.py；py_spider.dart `asset://` 加载；搜索范围过滤（粘贴 PikPak 链接时只搜 PikPak 源）。
+- M3 横封面 16:9：首页/详情/媒体库海报改 16/9，卡片约 200px。
+- 包名改 WinBox：com.winbox，MethodChannel com.winbox/py_spider、com.winbox/spider，应用名 WinBox，MainActivity 也加了 android:label="WinBox"（最近任务显示 WinBox）。
+- 内置源：59 个 py 源（PikPak + 磁力 + 57 个 zzzypro 站）随包，首次启动自动生成「WinBox 内置源」订阅（UU.py 未内置，只留 UU_fixed）。
+- 换源 bug：winbox_spider.py 的蜘蛛实例缓存键改成（脚本路径，类名，ext），之前只按类名缓存导致所有源都跑第一个（PikPak）。
+- 磁力 aria2：官方 aria2 1.37.0 Android arm64 随包（assets/aria2/aria2c-android-arm64），Android 10+ 的 W^X 限制改走 /system/bin/linker64 启动。HTTPS tracker 暂无 CA 证书包。
+- 下载管理：416 断点续传失败改从头重下（最多 2 次），流中断自动续传（2s/4s/6s 退避，最多 3 次）；下载完成可点开播/打开文件夹（原生 FileProvider + SystemActionsPlugin，xdg-open 在 Android 上不存在）。
+- CSV 导入：LocalRelay 加 /import-csv，弹系统文件选择器（SAF）；粘贴多链接批量识别导入；导入的标题问题已修（见下）。
+- 标题修复：粘贴导入时把解析出的真实标题一起存进 paste，CSV 列表打开时给没标题的旧条目并发补真实标题并写回（_fill_csv_names，6 秒预算）。
+- 备份导出修复：file_selector 的保存对话框在 Android 上未实现，改走原生 MediaStore 直接写进系统 Download 目录（不用存储权限，卸载后文件还在）。
+- 签名：持久 release keystore（~/winbox-release.keystore，alias winbox，有效期到 2051，证书 SHA-256 72d8b10e149845ac58334ced7b52a54916dd9dd0e1902b648392dfcfb75feb95），key.properties + release signingConfig（无 key.properties 时退回 debug）。**注意：之前一直用临时 debug 签名，机器重启就丢，所以这次必须先卸载一次旧包再装新包；装上这个包之后，以后更新都能直接覆盖。** 卸载前先在设置里导出备份（订阅/收藏/历史能保住；PikPak CSV 列表备份里没有，装完需重新导入原文件或重新粘贴链接）。
+
+待验收（真机，用户/WorkBuddy）：
+- 安装打开；PikPak 源打开、分享链接搜索、播放；首页封面横 16:9；换源；磁力播放；大文件下载不断线、下载完能打开；CSV 导入弹文件选择器、粘贴导入标题完整；备份导出能在 Download 里生成文件；切后台显示 WinBox；卸载重装后以后更新可覆盖。
+
+已知限制：
+- `_invokeHold` 在 Android 上退化为单次调用，脚本本机取流地址暂播不了，直链不受影响。
+- aria2 的 HTTPS tracker 缺 CA 证书包；磁力主要靠 DHT + UDP/HTTP tracker，一般不受影响。
+- 构建环境在 Muse 的 VM 里（$HOME 持久，/root、/usr 不持久；本地 Maven 镜像 127.0.0.1:18080；服务重启后需重启镜像再构建）。
+
+## 11. 产物与交接方式
+
+- APK（156 MB）无法 git push（GitHub 单文件上限 100MB），放在用户 Google Drive，链接见 pool Issue #7 最新评论。
+- 本文档（docs/WINBOX-ROUTE.md）已推 fork main；本地全部源码改动待用户验收后统一推 fork main（再 revert 本地构建用的镜像/代理等临时改动）。
+- 验收通过后：同步 Issue #7（按 PROTOCOL.md 改 label），再推代码。
