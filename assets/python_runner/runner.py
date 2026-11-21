@@ -230,14 +230,16 @@ def _serialize(result, real_out=_REAL_OUT):
     real_out.flush()
 
 
-# ★ 蜘蛛实例缓存（2026-09-24）：键 = (类名, ext)。与 Java 侧 SpiderPool 同理 ——
+# ★ 蜘蛛实例缓存（2026-09-24）：键 = (脚本路径, 类名, ext)。与 Java 侧 SpiderPool 同理 ——
 #   源脚本的 init(ext) 可能要解析配置/建会话，每请求重建会让首次与后续都变慢；
 #   这里缓存实例复用；同一键并发时各自新建（Python 无锁，够用）。
+#   键必须含脚本路径：所有 TVBox 源都叫 class Spider，只用 (类名, ext) 会让
+#   后切的源复用第一个源的实例（Android 真机 2026-11-20：切换源切不动）。
 _INSTANCES = {}
 
 
 def _acquire(ns, class_name, ext):
-    key = (class_name, ext or '')
+    key = (ns.get('__file__', ''), class_name, ext or '')
     sp = _INSTANCES.pop(key, None)
     if sp is None:
         sp = _new_instance(ns, class_name)

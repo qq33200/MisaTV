@@ -11,6 +11,7 @@ import '../../core/logging/app_log.dart';
 import '../../core/logging/log_redact.dart';
 import '../artwork/tmdb_network.dart';
 import '../drive/baidu_native.dart';
+import '../file_dialog_service.dart';
 import '../live/live_ua_policy.dart';
 import '../drive/drive_descriptor.dart';
 import '../drive/quark_native.dart';
@@ -632,6 +633,14 @@ class LocalRelay {
         return await _handleExternalEpisode(request);
       }
       if (path.startsWith('/bt/')) return await _handleBt(request);
+      // PikPak 源导入 CSV：弹系统文件框选 CSV/TXT，解析其中的分享链接回给 py 源。
+      // 只允许本机调用（浏览器请求一律拒绝，否则任意网页都能弹文件框读磁盘）。
+      if (path == '/import-csv') {
+        if (browserRequest) {
+          return await _text(res, 403, '导入只允许本机调用');
+        }
+        return await _handleImportCsv(request);
+      }
       if (path == '/debug/spider' || path.startsWith('/debug/spider/')) {
         return await _handleSpiderDebug(request);
       }
@@ -2756,6 +2765,58 @@ class LocalRelay {
       '.txt' || '.log' => 'text/plain; charset=utf-8',
       _ => 'application/octet-stream',
     };
+  }
+
+  /// `GET /import-csv`：给 py 源用的 CSV 导入。
+  ///
+  /// 弹系统文件框让用户选一个 CSV/TXT，读出其中的 PikPak 分享链接，
+  /// 以桌面版同款格式回给调用方：`{ok, items: [{u, n}]}`；用户取消返回
+  /// `{ok: false, error: 'canceled'}`。Android 上 file_selector 走系统
+  /// 文件选择器（SAF），不需要存储权限。
+  Future<void> _handleImportCsv(HttpRequest request) async {
+    final res = request.response;
+    final picked = await FileDialogService.pickFile(
+      types: [FileDialogService.csvType],
+      confirmButtonText: '导入',
+    );
+    if (picked == null) {
+      return await _debugJson(res, 200, {
+        'ok': false,
+        'error': 'canceled',
+      });
+    }
+    final items = <Map<String, String>>[];
+    try {
+      final bytes = await File(picked).readAsBytes();
+      // 链接本身是 ASCII；标题里的 GBK/乱码不影响识别，容错解码即可。
+      final text = utf8.decode(bytes, allowMalformed: true);
+      final linkRe = RegExp(
+        r'(?:https?://)?(?:mypikpak\.com|mypikpak\.net|pikpak\.me)/s/[A-Za-z0-9_/-]+',
+        caseSensitive: false,
+      );
+      final seen = <String>{};
+      for (final line in text.split('\n')) {
+        final m = linkRe.firstMatch(line);
+        if (m == null) continue;
+        var url = m.group(0)!;
+        if (!url.toLowerCase().startsWith('http')) {
+          url = 'https://$url';
+        }
+        if (!seen.add(url)) continue;
+        var name = '';
+        for (final part in line.split(RegExp(r'[,;\t]'))) {
+          final p = part.trim().replaceAll('"', '');
+          if (p.isEmpty || p.toLowerCase().contains('pikpak')) continue;
+          if (p.length > name.length) name = p;
+        }
+        if (name.length > 120) name = name.substring(0, 120);
+        items.add({'u': url, 'n': name});
+        if (items.length >= 500) break;
+      }
+    } catch (e) {
+      return await _debugJson(res, 200, {'ok': false, 'error': '$e'});
+    }
+    return await _debugJson(res, 200, {'ok': true, 'items': items});
   }
 
   Future<void> _text(HttpResponse res, int status, String message) async {

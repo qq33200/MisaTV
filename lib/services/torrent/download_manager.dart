@@ -53,7 +53,7 @@ class DownloadManager extends ChangeNotifier {
     try {
       if (!await aria.ensure()) {
         if (seq != _seq) return;
-        error = 'BT 引擎不可用（缺少 aria2c.exe）';
+        error = 'BT 引擎不可用（缺少 aria2c）';
         tasks = const [];
         return;
       }
@@ -105,7 +105,7 @@ class DownloadManager extends ChangeNotifier {
     final text = uri.trim();
     if (text.isEmpty) throw const FormatException('请填写下载地址或磁力链接');
     if (!await aria.ensure()) {
-      throw StateError('BT 引擎不可用（缺少 aria2c.exe）');
+      throw StateError('BT 引擎不可用（缺少 aria2c）');
     }
     final target = text.toLowerCase().startsWith('magnet:')
         ? withTrackers(text)

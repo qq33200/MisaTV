@@ -1,0 +1,594 @@
+{
+ "sites": [
+  {
+   "key": "pikpak",
+   "name": "PikPak",
+   "type": 3,
+   "api": "asset://python_sources/pikpak.py",
+   "searchable": 1,
+   "quickSearch": 1,
+   "changeable": 1,
+   "filterable": 1
+  },
+  {
+   "key": "magnet",
+   "name": "磁力搜索",
+   "type": 3,
+   "api": "asset://python_sources/magnet.py",
+   "searchable": 1,
+   "quickSearch": 1,
+   "changeable": 1,
+   "filterable": 1
+  },
+  {
+   "key": "aiqiyi",
+   "name": "爱奇艺资源",
+   "type": 3,
+   "api": "asset://python_sources/AiQiYi.py",
+   "searchable": 1,
+   "quickSearch": 1,
+   "changeable": 1,
+   "filterable": 1
+  },
+  {
+   "key": "aosika",
+   "name": "奥斯卡资源",
+   "type": 3,
+   "api": "asset://python_sources/AoSiKa.py",
+   "searchable": 1,
+   "quickSearch": 1,
+   "changeable": 1,
+   "filterable": 1
+  },
+  {
+   "key": "baofeng",
+   "name": "暴风资源",
+   "type": 3,
+   "api": "asset://python_sources/BaoFeng.py",
+   "searchable": 1,
+   "quickSearch": 1,
+   "changeable": 1,
+   "filterable": 1
+  },
+  {
+   "key": "ck",
+   "name": "CK资源",
+   "type": 3,
+   "api": "asset://python_sources/CK.py",
+   "searchable": 1,
+   "quickSearch": 1,
+   "changeable": 1,
+   "filterable": 1
+  },
+  {
+   "key": "changzhang",
+   "name": "厂长资源",
+   "type": 3,
+   "api": "asset://python_sources/ChangZhang.py",
+   "searchable": 1,
+   "quickSearch": 1,
+   "changeable": 1,
+   "filterable": 1
+  },
+  {
+   "key": "dadi",
+   "name": "大地资源",
+   "type": 3,
+   "api": "asset://python_sources/DaDi.py",
+   "searchable": 1,
+   "quickSearch": 1,
+   "changeable": 1,
+   "filterable": 1
+  },
+  {
+   "key": "danaizi",
+   "name": "大奶子资源",
+   "type": 3,
+   "api": "asset://python_sources/DaNaiZi.py",
+   "searchable": 1,
+   "quickSearch": 1,
+   "changeable": 1,
+   "filterable": 1
+  },
+  {
+   "key": "dianyingtiantang",
+   "name": "电影天堂资源",
+   "type": 3,
+   "api": "asset://python_sources/DianYingTianTang.py",
+   "searchable": 1,
+   "quickSearch": 1,
+   "changeable": 1,
+   "filterable": 1
+  },
+  {
+   "key": "doudou",
+   "name": "豆豆资源",
+   "type": 3,
+   "api": "asset://python_sources/DouDou.py",
+   "searchable": 1,
+   "quickSearch": 1,
+   "changeable": 1,
+   "filterable": 1
+  },
+  {
+   "key": "fanhao",
+   "name": "番号资源",
+   "type": 3,
+   "api": "asset://python_sources/FanHao.py",
+   "searchable": 1,
+   "quickSearch": 1,
+   "changeable": 1,
+   "filterable": 1
+  },
+  {
+   "key": "fanqie",
+   "name": "番茄资源",
+   "type": 3,
+   "api": "asset://python_sources/FanQie.py",
+   "searchable": 1,
+   "quickSearch": 1,
+   "changeable": 1,
+   "filterable": 1
+  },
+  {
+   "key": "feifan",
+   "name": "非凡资源",
+   "type": 3,
+   "api": "asset://python_sources/FeiFan.py",
+   "searchable": 1,
+   "quickSearch": 1,
+   "changeable": 1,
+   "filterable": 1
+  },
+  {
+   "key": "guangsu",
+   "name": "光速资源",
+   "type": 3,
+   "api": "asset://python_sources/GuangSu.py",
+   "searchable": 1,
+   "quickSearch": 1,
+   "changeable": 1,
+   "filterable": 1
+  },
+  {
+   "key": "haohua",
+   "name": "豪华资源",
+   "type": 3,
+   "api": "asset://python_sources/HaoHua.py",
+   "searchable": 1,
+   "quickSearch": 1,
+   "changeable": 1,
+   "filterable": 1
+  },
+  {
+   "key": "heihei",
+   "name": "嘿嘿资源",
+   "type": 3,
+   "api": "asset://python_sources/HeiHei.py",
+   "searchable": 1,
+   "quickSearch": 1,
+   "changeable": 1,
+   "filterable": 1
+  },
+  {
+   "key": "heiliao",
+   "name": "黑料资源",
+   "type": 3,
+   "api": "asset://python_sources/HeiLiao.py",
+   "searchable": 1,
+   "quickSearch": 1,
+   "changeable": 1,
+   "filterable": 1
+  },
+  {
+   "key": "honglou",
+   "name": "红楼资源",
+   "type": 3,
+   "api": "asset://python_sources/HongLou.py",
+   "searchable": 1,
+   "quickSearch": 1,
+   "changeable": 1,
+   "filterable": 1
+  },
+  {
+   "key": "hongniu",
+   "name": "红牛资源",
+   "type": 3,
+   "api": "asset://python_sources/HongNiu.py",
+   "searchable": 1,
+   "quickSearch": 1,
+   "changeable": 1,
+   "filterable": 1
+  },
+  {
+   "key": "huya",
+   "name": "虎牙资源",
+   "type": 3,
+   "api": "asset://python_sources/HuYa.py",
+   "searchable": 1,
+   "quickSearch": 1,
+   "changeable": 1,
+   "filterable": 1
+  },
+  {
+   "key": "huangsecangku",
+   "name": "黄色仓库",
+   "type": 3,
+   "api": "asset://python_sources/HuangSeCangKu.py",
+   "searchable": 1,
+   "quickSearch": 1,
+   "changeable": 1,
+   "filterable": 1
+  },
+  {
+   "key": "huosu",
+   "name": "火速资源",
+   "type": 3,
+   "api": "asset://python_sources/HuoSu.py",
+   "searchable": 1,
+   "quickSearch": 1,
+   "changeable": 1,
+   "filterable": 1
+  },
+  {
+   "key": "ikun",
+   "name": "iKun资源",
+   "type": 3,
+   "api": "asset://python_sources/IKun.py",
+   "searchable": 1,
+   "quickSearch": 1,
+   "changeable": 1,
+   "filterable": 1
+  },
+  {
+   "key": "jkun",
+   "name": "jkun资源",
+   "type": 3,
+   "api": "asset://python_sources/JKun.py",
+   "searchable": 1,
+   "quickSearch": 1,
+   "changeable": 1,
+   "filterable": 1
+  },
+  {
+   "key": "jiji",
+   "name": "吉吉资源",
+   "type": 3,
+   "api": "asset://python_sources/JiJi.py",
+   "searchable": 1,
+   "quickSearch": 1,
+   "changeable": 1,
+   "filterable": 1
+  },
+  {
+   "key": "jipin",
+   "name": "极品资源",
+   "type": 3,
+   "api": "asset://python_sources/JiPin.py",
+   "searchable": 1,
+   "quickSearch": 1,
+   "changeable": 1,
+   "filterable": 1
+  },
+  {
+   "key": "jisu",
+   "name": "极速资源",
+   "type": 3,
+   "api": "asset://python_sources/JiSu.py",
+   "searchable": 1,
+   "quickSearch": 1,
+   "changeable": 1,
+   "filterable": 1
+  },
+  {
+   "key": "jinying",
+   "name": "金鹰资源",
+   "type": 3,
+   "api": "asset://python_sources/JinYing.py",
+   "searchable": 1,
+   "quickSearch": 1,
+   "changeable": 1,
+   "filterable": 1
+  },
+  {
+   "key": "jingpin98",
+   "name": "精品98",
+   "type": 3,
+   "api": "asset://python_sources/JingPin98.py",
+   "searchable": 1,
+   "quickSearch": 1,
+   "changeable": 1,
+   "filterable": 1
+  },
+  {
+   "key": "juliang",
+   "name": "巨量资源",
+   "type": 3,
+   "api": "asset://python_sources/JuLiang.py",
+   "searchable": 1,
+   "quickSearch": 1,
+   "changeable": 1,
+   "filterable": 1
+  },
+  {
+   "key": "kuaiche",
+   "name": "快车资源",
+   "type": 3,
+   "api": "asset://python_sources/KuaiChe.py",
+   "searchable": 1,
+   "quickSearch": 1,
+   "changeable": 1,
+   "filterable": 1
+  },
+  {
+   "key": "lebo",
+   "name": "乐播资源",
+   "type": 3,
+   "api": "asset://python_sources/LeBo.py",
+   "searchable": 1,
+   "quickSearch": 1,
+   "changeable": 1,
+   "filterable": 1
+  },
+  {
+   "key": "mangguo",
+   "name": "芒果资源",
+   "type": 3,
+   "api": "asset://python_sources/MangGuo.py",
+   "searchable": 1,
+   "quickSearch": 1,
+   "changeable": 1,
+   "filterable": 1
+  },
+  {
+   "key": "maoyan",
+   "name": "猫眼资源",
+   "type": 3,
+   "api": "asset://python_sources/MaoYan.py",
+   "searchable": 1,
+   "quickSearch": 1,
+   "changeable": 1,
+   "filterable": 1
+  },
+  {
+   "key": "mianfei",
+   "name": "免费资源",
+   "type": 3,
+   "api": "asset://python_sources/MianFei.py",
+   "searchable": 1,
+   "quickSearch": 1,
+   "changeable": 1,
+   "filterable": 1
+  },
+  {
+   "key": "modu",
+   "name": "魔都资源",
+   "type": 3,
+   "api": "asset://python_sources/MoDu.py",
+   "searchable": 1,
+   "quickSearch": 1,
+   "changeable": 1,
+   "filterable": 1
+  },
+  {
+   "key": "muji",
+   "name": "母鸡资源",
+   "type": 3,
+   "api": "asset://python_sources/MuJi.py",
+   "searchable": 1,
+   "quickSearch": 1,
+   "changeable": 1,
+   "filterable": 1
+  },
+  {
+   "key": "naixiangxiang",
+   "name": "奶香香",
+   "type": 3,
+   "api": "asset://python_sources/NaiXiangXiang.py",
+   "searchable": 1,
+   "quickSearch": 1,
+   "changeable": 1,
+   "filterable": 1
+  },
+  {
+   "key": "niuniu",
+   "name": "牛牛资源",
+   "type": 3,
+   "api": "asset://python_sources/NiuNiu.py",
+   "searchable": 1,
+   "quickSearch": 1,
+   "changeable": 1,
+   "filterable": 1
+  },
+  {
+   "key": "okziyuan",
+   "name": "ok资源",
+   "type": 3,
+   "api": "asset://python_sources/OkZiYuan.py",
+   "searchable": 1,
+   "quickSearch": 1,
+   "changeable": 1,
+   "filterable": 1
+  },
+  {
+   "key": "sanliuling",
+   "name": "360资源",
+   "type": 3,
+   "api": "asset://python_sources/SanLiuLing.py",
+   "searchable": 1,
+   "quickSearch": 1,
+   "changeable": 1,
+   "filterable": 1
+  },
+  {
+   "key": "souav",
+   "name": "搜av资源",
+   "type": 3,
+   "api": "asset://python_sources/SouAV.py",
+   "searchable": 1,
+   "quickSearch": 1,
+   "changeable": 1,
+   "filterable": 1
+  },
+  {
+   "key": "subo",
+   "name": "速播资源",
+   "type": 3,
+   "api": "asset://python_sources/SuBo.py",
+   "searchable": 1,
+   "quickSearch": 1,
+   "changeable": 1,
+   "filterable": 1
+  },
+  {
+   "key": "suoni",
+   "name": "索尼资源",
+   "type": 3,
+   "api": "asset://python_sources/SuoNi.py",
+   "searchable": 1,
+   "quickSearch": 1,
+   "changeable": 1,
+   "filterable": 1
+  },
+  {
+   "key": "taohua",
+   "name": "桃花资源",
+   "type": 3,
+   "api": "asset://python_sources/TaoHua.py",
+   "searchable": 1,
+   "quickSearch": 1,
+   "changeable": 1,
+   "filterable": 1
+  },
+  {
+   "key": "tianya",
+   "name": "天涯资源",
+   "type": 3,
+   "api": "asset://python_sources/TianYa.py",
+   "searchable": 1,
+   "quickSearch": 1,
+   "changeable": 1,
+   "filterable": 1
+  },
+  {
+   "key": "uu",
+   "name": "UU影视",
+   "type": 3,
+   "api": "asset://python_sources/UU_fixed.py",
+   "searchable": 1,
+   "quickSearch": 1,
+   "changeable": 1,
+   "filterable": 1
+  },
+  {
+   "key": "wujin",
+   "name": "无尽资源",
+   "type": 3,
+   "api": "asset://python_sources/WuJin.py",
+   "searchable": 1,
+   "quickSearch": 1,
+   "changeable": 1,
+   "filterable": 1
+  },
+  {
+   "key": "wushuiyin",
+   "name": "无水印资源",
+   "type": 3,
+   "api": "asset://python_sources/WuShuiYin.py",
+   "searchable": 1,
+   "quickSearch": 1,
+   "changeable": 1,
+   "filterable": 1
+  },
+  {
+   "key": "xigua",
+   "name": "西瓜资源",
+   "type": 3,
+   "api": "asset://python_sources/XiGua.py",
+   "searchable": 1,
+   "quickSearch": 1,
+   "changeable": 1,
+   "filterable": 1
+  },
+  {
+   "key": "xiaoji",
+   "name": "小鸡资源",
+   "type": 3,
+   "api": "asset://python_sources/XiaoJi.py",
+   "searchable": 1,
+   "quickSearch": 1,
+   "changeable": 1,
+   "filterable": 1
+  },
+  {
+   "key": "xinlang",
+   "name": "新浪资源",
+   "type": 3,
+   "api": "asset://python_sources/XinLang.py",
+   "searchable": 1,
+   "quickSearch": 1,
+   "changeable": 1,
+   "filterable": 1
+  },
+  {
+   "key": "xingba",
+   "name": "杏吧资源",
+   "type": 3,
+   "api": "asset://python_sources/XingBa.py",
+   "searchable": 1,
+   "quickSearch": 1,
+   "changeable": 1,
+   "filterable": 1
+  },
+  {
+   "key": "xingye",
+   "name": "星夜资源",
+   "type": 3,
+   "api": "asset://python_sources/XingYe.py",
+   "searchable": 1,
+   "quickSearch": 1,
+   "changeable": 1,
+   "filterable": 1
+  },
+  {
+   "key": "yaya",
+   "name": "鸭鸭资源",
+   "type": 3,
+   "api": "asset://python_sources/YaYa.py",
+   "searchable": 1,
+   "quickSearch": 1,
+   "changeable": 1,
+   "filterable": 1
+  },
+  {
+   "key": "yinghua",
+   "name": "樱花资源",
+   "type": 3,
+   "api": "asset://python_sources/YingHua.py",
+   "searchable": 1,
+   "quickSearch": 1,
+   "changeable": 1,
+   "filterable": 1
+  },
+  {
+   "key": "yutu",
+   "name": "玉兔资源",
+   "type": 3,
+   "api": "asset://python_sources/YuTu.py",
+   "searchable": 1,
+   "quickSearch": 1,
+   "changeable": 1,
+   "filterable": 1
+  },
+  {
+   "key": "zuida",
+   "name": "最大资源",
+   "type": 3,
+   "api": "asset://python_sources/ZuiDa.py",
+   "searchable": 1,
+   "quickSearch": 1,
+   "changeable": 1,
+   "filterable": 1
+  }
+ ]
+}

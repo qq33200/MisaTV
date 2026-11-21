@@ -253,14 +253,38 @@ class VideoDownloadTask {
     }
     var total = 0;
     var lastEmit = 0;
+    // 416 后从头下载的次数：临时链接过期/文件已变/断点越界时，断点已无效，
+    // 删掉 .part 从头下比直接报错更能让大文件下完；超过 2 次就认失败。
+    var rangeRestarts = 0;
+    // 读流中断（网络抖动/切网/VPN 闪断）后续传的次数：大文件在移动网络上
+    // 断开是常态，保留 .part 就地续传而不是让用户手动点重试；超过 3 次认失败。
+    var netRetries = 0;
     // 中继会把网盘 CDN 的单次响应夹到 32MB（规避跨度限速）：响应 EOF 不代表
     // 文件结束，要按已收字节继续请求剩余部分，直到 Content-Range 报的总长。
     while (true) {
-      final res = await _get(
-        client,
-        _url,
-        range: received > 0 ? 'bytes=$received-' : null,
-      );
+      final HttpClientResponse res;
+      try {
+        res = await _get(
+          client,
+          _url,
+          range: received > 0 ? 'bytes=$received-' : null,
+        );
+      } on StateError catch (e) {
+        if (e.message.contains('HTTP 416') &&
+            received > 0 &&
+            rangeRestarts < 2) {
+          rangeRestarts++;
+          AppLog.w(
+            'download',
+            '断点续传被拒（HTTP 416），删掉断点从头下载（第 $rangeRestarts 次）',
+          );
+          await _delete(tmp);
+          received = 0;
+          total = 0;
+          continue;
+        }
+        rethrow;
+      }
       final append = res.statusCode == 206 && received > 0;
       if (!append) received = 0;
       final reported = _contentRangeTotal(res);
@@ -283,26 +307,43 @@ class VideoDownloadTask {
         ),
       );
       final before = received;
-      await for (final chunk in res) {
-        if (_cancelled) {
-          await sink.close();
-          _sink = null;
+      try {
+        await for (final chunk in res) {
+          if (_cancelled) {
+            await sink.close();
+            _sink = null;
+            if (!_paused) await _delete(tmp);
+            throw const _DownloadCancelled();
+          }
+          sink.add(chunk);
+          received += chunk.length;
+          final now = DateTime.now().millisecondsSinceEpoch;
+          if (now - lastEmit >= 120) {
+            lastEmit = now;
+            _emit(
+              progress.value.copyWith(
+                receivedBytes: received,
+                totalBytes: total > 0 ? total : 0,
+                stage: '下载中…',
+              ),
+            );
+          }
+        }
+      } catch (e) {
+        await sink.close();
+        _sink = null;
+        if (_cancelled || e is _DownloadCancelled) {
           if (!_paused) await _delete(tmp);
           throw const _DownloadCancelled();
         }
-        sink.add(chunk);
-        received += chunk.length;
-        final now = DateTime.now().millisecondsSinceEpoch;
-        if (now - lastEmit >= 120) {
-          lastEmit = now;
-          _emit(
-            progress.value.copyWith(
-              receivedBytes: received,
-              totalBytes: total > 0 ? total : 0,
-              stage: '下载中…',
-            ),
-          );
+        if (netRetries < 3) {
+          netRetries++;
+          AppLog.w('download', '下载中断（$e），${2 * netRetries}s 后断点续传');
+          await Future.delayed(Duration(seconds: 2 * netRetries));
+          if (_cancelled) throw const _DownloadCancelled();
+          continue;
         }
+        rethrow;
       }
       await sink.close();
       _sink = null;

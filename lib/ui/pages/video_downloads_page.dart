@@ -5,10 +5,13 @@ import 'package:flutter/material.dart';
 import '../../app.dart';
 import '../../models/download_task.dart';
 import '../../models/video_download_record.dart';
+import '../../models/vod.dart';
 import '../../services/download/video_download_manager.dart';
 import '../../services/download/video_download_service.dart';
+import '../../services/media/local_media_service.dart';
 import '../../services/relay/local_relay.dart';
 import '../../services/torrent/download_folder.dart';
+import '../raw_play.dart';
 import '../widgets/empty_state.dart';
 
 /// 下载管理：手动下载的记录（暂停 / 继续 / 删除）+ 边播缓存统计与清理。
@@ -66,8 +69,10 @@ class _VideoDownloadsPageState extends State<VideoDownloadsPage> {
         _toast(
           '「${record.title}」下载完成',
           actionLabel: '打开文件夹',
-          onAction: () => openDownloadFolder(
-            record.directory.isEmpty ? videoDownloadDir() : record.directory,
+          onAction: () => unawaited(
+            _openFolder(
+              record.directory.isEmpty ? videoDownloadDir() : record.directory,
+            ),
           ),
         );
       } else if (record.status == VideoDownloadStatus.failed) {
@@ -202,6 +207,34 @@ class _VideoDownloadsPageState extends State<VideoDownloadsPage> {
       _toast('操作失败：$e');
     }
     await _refresh();
+  }
+
+  /// 打开下载目录：打不开时 toast 提示（Android 上以前是静默失败）。
+  Future<void> _openFolder(String dir) async {
+    final error = await openDownloadFolder(dir);
+    if (error != null) _toast('打不开文件夹：$error');
+  }
+
+  /// 播放已下载完的视频：走本地中继 + 内置播放器。
+  Future<void> _playRecord(VideoDownloadRecord record) async {
+    final path = record.filePath.trim();
+    if (path.isEmpty) {
+      _toast('文件路径为空');
+      return;
+    }
+    final url = localMediaPlayUrl(path);
+    if (url.isEmpty) {
+      _toast('本地播放中继未启动，无法播放');
+      return;
+    }
+    await openRawPlayback(
+      context,
+      title: record.title,
+      subtitle: '已下载',
+      episodes: [Episode(name: record.title, url: url)],
+      sourceKey: 'download',
+      flag: '已下载',
+    );
   }
 
   Future<void> _removeRecord(
@@ -373,10 +406,13 @@ class _VideoDownloadsPageState extends State<VideoDownloadsPage> {
                                   onResume: () => _act(
                                     () => manager.resume(record.id),
                                   ),
-                                  onOpenFolder: () => openDownloadFolder(
-                                    record.directory.isEmpty
-                                        ? dir
-                                        : record.directory,
+                                  onOpen: () => unawaited(_playRecord(record)),
+                                  onOpenFolder: () => unawaited(
+                                    _openFolder(
+                                      record.directory.isEmpty
+                                          ? dir
+                                          : record.directory,
+                                    ),
                                   ),
                                   onRemove: (deleteFile) => _removeRecord(
                                     manager,
@@ -468,7 +504,7 @@ class _VideoDownloadsPageState extends State<VideoDownloadsPage> {
                       ? null
                       : IconButton(
                           tooltip: '打开下载目录',
-                          onPressed: () => openDownloadFolder(dir),
+                          onPressed: () => unawaited(_openFolder(dir)),
                           icon: const Icon(Icons.open_in_new_rounded),
                         ),
                 ),
@@ -870,6 +906,7 @@ class _RecordTile extends StatelessWidget {
     required this.speed,
     required this.onPause,
     required this.onResume,
+    required this.onOpen,
     required this.onOpenFolder,
     required this.onRemove,
   });
@@ -878,6 +915,7 @@ class _RecordTile extends StatelessWidget {
   final double speed;
   final VoidCallback onPause;
   final Future<void> Function() onResume;
+  final VoidCallback onOpen;
   final VoidCallback onOpenFolder;
   final Future<void> Function(bool deleteFile) onRemove;
 
@@ -901,7 +939,11 @@ class _RecordTile extends StatelessWidget {
       if (!active && record.updatedAt > 0) _formatTimeShort(record.updatedAt),
     ].join(' · ');
     final showBar = active || paused || (failed && (fraction ?? 0) > 0);
-    return AnimatedContainer(
+    // 已完成的点整行直接播放；未完成的点按无动作。
+    return InkWell(
+      onTap: completed ? onOpen : null,
+      borderRadius: BorderRadius.circular(12),
+      child: AnimatedContainer(
       duration: const Duration(milliseconds: 320),
       curve: Curves.easeOut,
       padding: const EdgeInsets.fromLTRB(12, 10, 4, 10),
@@ -1032,6 +1074,8 @@ class _RecordTile extends StatelessWidget {
                   onPause();
                 case 'resume':
                   unawaited(onResume());
+                case 'open':
+                  onOpen();
                 case 'folder':
                   onOpenFolder();
                 case 'delete':
@@ -1046,6 +1090,8 @@ class _RecordTile extends StatelessWidget {
               if (record.canResume)
                 const PopupMenuItem(value: 'resume', child: Text('继续下载')),
               if (completed)
+                const PopupMenuItem(value: 'open', child: Text('播放')),
+              if (completed)
                 const PopupMenuItem(value: 'folder', child: Text('打开文件夹')),
               if (active || record.canResume)
                 const PopupMenuDivider(),
@@ -1059,6 +1105,7 @@ class _RecordTile extends StatelessWidget {
             ],
           ),
         ],
+      ),
       ),
     );
   }

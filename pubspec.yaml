@@ -1,7 +1,7 @@
 name: kniephos
 description: "MisaTV — 轻量、本地优先的 TVBox 客户端（Flutter 重构）"
 publish_to: 'none'
-version: 1.2.0+13
+version: 1.2.0+14
 
 environment:
   sdk: ^3.13.7
@@ -69,6 +69,8 @@ flutter:
     - assets/js_lib/
     - assets/python_runner/
     - assets/python_runner/base/
+    - assets/python_sources/
+    - assets/winbox-builtin-sources.json
     - assets/jvm/
     - assets/jvm/shell-real/
     - assets/aria2/

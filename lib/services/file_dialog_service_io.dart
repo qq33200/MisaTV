@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:file_selector/file_selector.dart';
+import 'package:flutter/services.dart';
 
 /// 本地文件/目录选择与保存。桌面端走系统对话框；Web 版在 `*_web.dart` 里统一拒绝。
 class FileDialogService {
@@ -20,6 +21,10 @@ class FileDialogService {
     extensions: ['txt', 'm3u', 'm3u8'],
   );
   static const zipType = XTypeGroup(label: '本地包（ZIP）', extensions: ['zip']);
+  static const csvType = XTypeGroup(
+    label: 'CSV / 文本（PikPak 分享链接）',
+    extensions: ['csv', 'txt'],
+  );
   static const exeType = XTypeGroup(label: '第三方播放器', extensions: ['exe']);
   static const fontType = XTypeGroup(
     label: '字体（TTF / OTF）',
@@ -59,11 +64,24 @@ class FileDialogService {
   static Future<String> readText(String path) => File(path).readAsString();
 
   /// 选择保存位置并写入文本；取消返回 null，成功返回文件路径。
+  ///
+  /// Android 上 file_selector 的保存对话框根本没实现（调 getSaveLocation
+  /// 就抛 UnimplementedError），所以直接走原生通道写进系统 Download 目录
+  ///（MediaStore，不用存储权限，卸载后文件还在），返回真实路径。
   static Future<String?> saveText({
     required String suggestedName,
     required String text,
     XTypeGroup? type,
   }) async {
+    if (Platform.isAndroid) {
+      const channel = MethodChannel('com.winbox/system');
+      final res = await channel.invokeMethod<Map<Object?, Object?>>(
+        'saveToDownloads',
+        {'name': suggestedName, 'content': text},
+      );
+      if (res?['ok'] == true) return res?['path'] as String?;
+      throw StateError(res?['error']?.toString() ?? '保存失败');
+    }
     final location = await getSaveLocation(
       suggestedName: suggestedName,
       acceptedTypeGroups: type == null ? const [] : [type],

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../core/logging/app_log.dart';
 import '../core/logging/log_redact.dart';
@@ -912,6 +913,37 @@ class AppState extends ChangeNotifier {
     searchService.breaker.importJsonString(store.sourceHealthJson);
     searchService.onHealthChanged = _scheduleSourceHealthSave;
     activeProfileId = store.activeProfileId;
+    // WinBox：首次启动且没有任何订阅档案时，自动导入随包内置源
+    //（assets/winbox-builtin-sources.json，59 个 py 源，走 asset://）。
+    // 用户之后导入自己的订阅或删除内置源都不会再触发；内置源只是个普通档案。
+    if (profiles.isEmpty) {
+      try {
+        final builtinJson = await rootBundle.loadString(
+          'assets/winbox-builtin-sources.json',
+        );
+        final parsed = ConfigParser.parse(
+          builtinJson,
+          baseUrl: 'builtin://winbox',
+          jarReady: jarReady,
+        );
+        if (parsed.config.sites.isNotEmpty) {
+          final profile = ConfigProfile(
+            id: 'builtin-winbox',
+            name: 'WinBox 内置源',
+            url: 'builtin://winbox',
+            rawJson: builtinJson,
+            importedAt: DateTime.now(),
+            siteCount: parsed.config.sites.length,
+          );
+          profiles = [profile];
+          activeProfileId = profile.id;
+          await store.saveProfiles(profiles);
+          await store.setActiveProfileId(profile.id);
+        }
+      } catch (e) {
+        AppLog.w('state', '内置源加载失败：$e');
+      }
+    }
     activeSiteKey = store.activeSiteKey;
     activeLiveProfileId = store.activeLiveProfileId;
     activeLiveKey = store.activeLiveKey;

@@ -155,7 +155,10 @@ def invoke(script_path, class_name, method, ext='', args_json='[]'):
     cls = ns.get(class_name or 'Spider')
     if cls is None:
         raise ValueError('Python 类不存在: %s' % class_name)
-    key = (class_name, ext or '')
+    key = (os.path.abspath(script_path), class_name, ext or '')
+    # ★ 键必须含脚本路径：所有 TVBox 源都叫 class Spider，只用 (类名, ext)
+    #   会让后切的源复用第一个源的实例——表现就是「切换源切不动，切完还是
+    #   默认第一个源」（2026-11-20 真机反馈）。
     sp = _INSTANCES.pop(key, None)
     if sp is None:
         sp = cls()

@@ -1,3 +1,6 @@
+import java.io.FileInputStream
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
@@ -7,9 +10,30 @@ plugins {
 }
 
 android {
-    namespace = "com.kniephos.kniephos"
+    namespace = "com.winbox"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
+
+    // Release 签名：读 android/key.properties（已进 .gitignore，不会进仓库）。
+    // key.properties 里的 storeFile 指向 $HOME 下的持久 keystore，机器重启也不会丢，
+    // 所以以后每次打包都是同一个签名，覆盖安装不再要求卸载。
+    // key.properties 不存在时（比如别人直接 clone 下来编译）退回 debug 签名。
+    val keystoreProperties = Properties()
+    val keystorePropertiesFile = rootProject.file("key.properties")
+    if (keystorePropertiesFile.exists()) {
+        keystoreProperties.load(FileInputStream(keystorePropertiesFile))
+    }
+
+    signingConfigs {
+        create("release") {
+            if (keystorePropertiesFile.exists()) {
+                keyAlias = keystoreProperties["keyAlias"] as String
+                keyPassword = keystoreProperties["keyPassword"] as String
+                storeFile = file(keystoreProperties["storeFile"] as String)
+                storePassword = keystoreProperties["storePassword"] as String
+            }
+        }
+    }
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -18,7 +42,7 @@ android {
 
     defaultConfig {
         // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
-        applicationId = "com.kniephos.kniephos"
+        applicationId = "com.winbox"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion
@@ -37,9 +61,12 @@ android {
 
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            // 有 key.properties 就用持久 release 签名，否则退回 debug 签名。
+            signingConfig = if (keystorePropertiesFile.exists()) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
             // Flutter 3.47 的 release 构建会跑 R8。CatVod 宿主类只被外部 jar/壳 dex
             // 反射引用，不 keep 会被裁掉或混淆成短名，导致加固壳 ClassNotFoundException。
             isMinifyEnabled = true
@@ -77,7 +104,7 @@ flutter {
 }
 
 // WinBox M1：Android 端 py 蜘蛛的 CPython 运行时（Chaquopy 17.2）。
-// Python 3.12（64 位，与桌面端 3.11 的 py 源兼容：标准库 + requests 族）。
+// Python 3.11（64 位，与桌面端 3.11 的 py 源兼容：标准库 + requests 族）。
 // pip 只装 py 源实际用到的纯 Python / 已有 Android wheel 的包；lxml、
 // pycryptodome 在 Chaquopy 仓库有 Android wheel，requests 族为纯 Python。
 chaquopy {

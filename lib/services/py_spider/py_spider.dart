@@ -45,12 +45,12 @@ class SpiderProxyResult {
 ///
 /// 脚本下载到本地缓存，然后交给随包 runner.py + 按需安装的嵌入式 Python 执行。
 /// WinBox M1（Android）：Chaquopy 把 CPython 3.12 打进 APK，py 蜘蛛走
-/// MethodChannel "com.kniephos.kniephos/py_spider" 调用 Kotlin 侧的 Chaquopy，
+/// MethodChannel "com.winbox/py_spider" 调用 Kotlin 侧的 Chaquopy，
 /// 不再找 python.exe / 不再下载运行时。常驻取流（--hold）暂不支持，见 _invokeHold。
 class PySpiderService {
   /// Android 端 Chaquopy 桥（Kotlin PySpiderPlugin）。
   static const _androidChannel = MethodChannel(
-    'com.kniephos.kniephos/py_spider',
+    'com.winbox/py_spider',
   );
   PySpiderService({PyRuntime? runtime, this.driveTokens})
     : _runtimeOverride = runtime;
@@ -256,6 +256,29 @@ class PySpiderService {
       if (!local.existsSync()) throw SourceException('本地 .py 蜘蛛不存在：$path');
       _scripts[site.api] = local;
       return local;
+    }
+
+    // WinBox M2：随包内置 py 源（asset://python_sources/pikpak.py）。
+    // 从 Flutter asset 读出来写进 python_cache 再走 Chaquopy，不用下载、离线可用、
+    // 版本跟 APK 走。站点 api 填 asset://python_sources/pikpak.py 即可。
+    if (base.startsWith('asset://')) {
+      // api 填 asset://python_sources/pikpak.py；Flutter asset 实际路径带 assets/
+      // 前缀，两种写法都接受。
+      var assetPath = base.substring('asset://'.length);
+      if (!assetPath.startsWith('assets/')) assetPath = 'assets/$assetPath';
+      try {
+        final data = await rootBundle.load(assetPath);
+        final bytes = data.buffer.asUint8List();
+        if (bytes.length < 8 || !RegExp(r'\bclass\s+\w+').hasMatch(utf8.decode(bytes, allowMalformed: true))) {
+          throw SourceException('内置 PY 蜘蛛无效：$assetPath');
+        }
+        file.writeAsBytesSync(bytes);
+      } catch (e) {
+        if (e is SourceException) rethrow;
+        throw SourceException('内置 PY 蜘蛛读取失败：$assetPath（$e）');
+      }
+      _scripts[site.api] = file;
+      return file;
     }
 
     // 远程脚本每次应用会话首次使用时都回源一次：源站可能替换了同一 URL 上的

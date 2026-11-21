@@ -19,7 +19,7 @@ import '../../core/logging/app_log.dart';
 import '../../core/net/app_http.dart';
 
 /// 安卓版「jar / DEX 蜘蛛」服务：用 ART 的 `DexClassLoader` 直接加载蜘蛛 DEX，
-/// 通过 MethodChannel(`com.kniephos.kniephos/spider`) 调用 CatVod 蜘蛛接口。
+/// 通过 MethodChannel(`com.winbox/spider`) 调用 CatVod 蜘蛛接口。
 ///
 /// 这是桌面端「JRE17 + dex2jar + 外部 JVM 进程」的安卓等价实现，也是把
 /// [dex2jar] 与 [unidbg] 两个能力落到安卓上的方式：
@@ -37,7 +37,7 @@ class JarSpiderAndroidService extends JarSpiderService {
     super.http,
   });
 
-  static const _channel = MethodChannel('com.kniephos.kniephos/spider');
+  static const _channel = MethodChannel('com.winbox/spider');
 
   /// 已加载到插件侧的蜘蛛（按 jar 指纹 + 类名 复用，避免重复加载）。
   final Map<String, _LoadedSpider> _loaded = {};

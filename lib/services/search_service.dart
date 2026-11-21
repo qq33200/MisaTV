@@ -60,7 +60,21 @@ class SearchService {
     // 单源收窄不在这里做 —— 搜索页的 `@源名` 已经收窄了 scope。
     final parsed = parseSearchQuery(keyword);
     final query = parsed.keyword;
-    final usable = sites.where((s) => s.searchable == 1).toList();
+    var usable = sites.where((s) => s.searchable == 1).toList();
+    // WinBox M2（移植 patch-search-scope.py）：搜索词是 PikPak 分享链接时只查
+    // PikPak 源，不再遍历全部源。total 也随之变成实际执行的源数，搜索横幅显示
+    // 的就是实际源数，不用再单独改横幅。
+    if (RegExp(r'(?:mypikpak\.com|pikpak\.me)/s/', caseSensitive: false)
+        .hasMatch(query)) {
+      final only = usable
+          .where((s) => s.key == 'pikpak' || s.api.toLowerCase().contains('pikpak'))
+          .toList();
+      if (only.isNotEmpty) {
+        AppLog.i('search',
+            'pikpak link -> only pikpak source (skip ${usable.length - only.length} other sources)');
+        usable = only;
+      }
+    }
     final siteByKey = <String, SourceBean>{
       for (final site in usable) site.key: site,
     };

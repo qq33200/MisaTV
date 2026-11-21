@@ -117,10 +117,19 @@ class Aria2Sidecar {
   }) : dir = downloadDir.trim().isNotEmpty
            ? downloadDir.trim()
            : p.join(supportDir, 'bt'),
-       _exe = p.join(supportDir, 'aria2', 'aria2c.exe'),
+       // WinBox Android：内置官方 aria2 1.37.0 的 Android arm64 版（assets/aria2/
+       // aria2c-android-arm64），与 Windows 的 aria2c.exe 同一套 RPC/参数。
+       _exe = p.join(
+         supportDir,
+         'aria2',
+         Platform.isWindows ? 'aria2c.exe' : 'aria2c',
+       ),
        _log = logger ?? ((_) {});
 
-  static const String assetPath = 'assets/aria2/aria2c.exe';
+  /// 随包的引擎资产：Windows 用 aria2c.exe，Android 用 arm64 的 aria2c。
+  static String get assetPath => Platform.isWindows
+      ? 'assets/aria2/aria2c.exe'
+      : 'assets/aria2/aria2c-android-arm64';
 
   /// 会话目录（所有 BT 会话共用；按 infoHash 分子目录由 aria2 按种子名自动创建）。
   final String dir;
@@ -137,8 +146,9 @@ class Aria2Sidecar {
 
   /// 引擎文件是否就位（缺文件时上层给「未内置 BT 引擎」的人话提示，而不是空等超时）。
   Future<bool> available() async {
-    // 内置的是 Windows 版 aria2c.exe：其它平台直接判定不可用（不做无意义的解包）。
-    if (!Platform.isWindows) return false;
+    // 内置引擎只随 Windows（aria2c.exe）与 Android arm64（aria2c）分发；
+    // 其它平台直接判定不可用（不做无意义的解包）。
+    if (!Platform.isWindows && !Platform.isAndroid) return false;
     try {
       if (File(_exe).existsSync()) return true;
       return await _extract();
@@ -147,7 +157,7 @@ class Aria2Sidecar {
     }
   }
 
-  /// 把打包的 aria2c.exe 释放到应用数据目录（只在缺失时写；资产是只读的）。
+  /// 把打包的 aria2c 释放到应用数据目录（只在缺失时写；资产是只读的）。
   Future<bool> _extract() async {
     try {
       final data = await rootBundle.load(assetPath);
@@ -157,6 +167,17 @@ class Aria2Sidecar {
         data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes),
         flush: true,
       );
+      if (Platform.isAndroid) {
+        // Android 上资产解出来默认没有执行位，必须 chmod 才能 exec；
+        // chmod 失败就当引擎缺失，上层给人话提示而不是启动时崩。
+        final chmod = await Process.run('chmod', ['755', file.path]).catchError(
+          (_) => Process.run('/system/bin/chmod', ['755', file.path]),
+        );
+        if (chmod.exitCode != 0) {
+          _log('BT 引擎 chmod 失败：${chmod.stderr}');
+          return false;
+        }
+      }
       return file.existsSync();
     } catch (e) {
       _log('BT 引擎资源释放失败：$e');
@@ -189,9 +210,24 @@ class Aria2Sidecar {
         dir: dir,
         stopWithPid: Platform.isWindows ? pid : null,
       );
+      // Android 10+ W^X：targetSdk 29+ 的应用不能直接 exec 应用数据目录里的文件
+      //（SELinux 拒绝 app_data_file 的 execute_no_trans），所以上一版在这里
+      // Process.start 直接抛 Permission denied，表现为「BT 引擎启动失败」。
+      // 改走系统动态链接器启动：内核只看到执行 /system/bin/linker64（系统文件，
+      // 允许），再由 linker 映射并运行我们的 ELF（Termux 同款做法；-- 开头的
+      // aria2 参数跟在可执行文件路径后面，会原样透传给 aria2）。
+      final String command;
+      final List<String> commandArgs;
+      if (Platform.isAndroid) {
+        command = '/system/bin/linker64';
+        commandArgs = [_exe, ...args];
+      } else {
+        command = _exe;
+        commandArgs = args;
+      }
       final proc = await Process.start(
-        _exe,
-        args,
+        command,
+        commandArgs,
         // 必须是 normal：detachedWithStdio 模式下 `proc.exitCode` 会抛
         // `Bad state: Process is detached`，刚启动就被当成启动失败；
         // 父进程退出后的清理由 `--stop-with-process=<本进程 pid>` 兜底。
