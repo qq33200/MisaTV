@@ -1,3 +1,4 @@
+import java.io.File
 import java.io.FileInputStream
 import java.util.Properties
 
@@ -6,16 +7,16 @@ import java.util.Properties
 fun findBuildPython(): String? {
     val direct = listOf("/usr/bin/python3.12", "/usr/local/bin/python3.12")
     for (p in direct) {
-        val f = java.io.File(p)
+        val f = File(p)
         if (f.canExecute()) return f.absolutePath
     }
-    val root = java.io.File("/opt/hostedtoolcache/Python")
+    val root = File("/opt/hostedtoolcache/Python")
     if (root.isDirectory) {
-        val dirs = root.listFiles()?.sortedByDescending { it.name } ?: emptyArray()
+        val dirs = root.listFiles()?.sortedByDescending { it.name } ?: emptyArray<File>()
         for (dir in dirs) {
             if (!dir.name.startsWith("3.12")) continue
             for (rel in listOf("x64/bin/python3", "x64/bin/python3.12")) {
-                val f = java.io.File(dir, rel)
+                val f = File(dir, rel)
                 if (f.canExecute()) return f.absolutePath
             }
         }
