@@ -2,14 +2,14 @@
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
     <application
-        android:label="WinBox"
+        android:label="WinBox 新版"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
         android:usesCleartextTraffic="true">
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:label="WinBox"
+            android:label="WinBox 新版"
             android:launchMode="singleTop"
             android:taskAffinity=""
             android:theme="@style/LaunchTheme"
@@ -38,7 +38,7 @@
              文件管理器（Android 7+ 禁止把 file:// URI 传给其它应用）。 -->
         <provider
             android:name="androidx.core.content.FileProvider"
-            android:authorities="com.winbox.fileprovider"
+            android:authorities="com.winbox.app.fileprovider"
             android:exported="false"
             android:grantUriPermissions="true">
             <meta-data
