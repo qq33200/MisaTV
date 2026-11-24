@@ -180,7 +180,7 @@ class LibtorrentBridge {
         val handle = handleOf(normalizeHash(infoHash))
         val st = handle.status()
         val ec = st.errorCode()
-        return mapOf(
+        return mapOf<String, Any?>(
             "ok" to true,
             "progress" to st.progress().toDouble(),
             "done" to st.totalDone(),
@@ -192,7 +192,7 @@ class LibtorrentBridge {
             "finished" to st.isFinished(),
             "seeding" to st.isSeeding(),
             "state" to st.state().toString(),
-            "error" to if (ec.value() == 0) "" else ec.message(),
+            "error" to (if (ec.value() == 0) "" else ec.message()),
         )
     }
 
