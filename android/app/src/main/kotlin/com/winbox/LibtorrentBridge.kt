@@ -192,7 +192,9 @@ class LibtorrentBridge {
             "finished" to st.isFinished(),
             "seeding" to st.isSeeding(),
             "state" to st.state().toString(),
-            "error" to (if (ec.value() == 0) "" else ec.message()),
+            // ErrorCode 是 JavaBean 包装类：Kotlin 侧 getValue()/getMessage()
+            // 暴露为属性 value / message，不能写成 ec.value()/ec.message()。
+            "error" to (if (ec.value == 0) "" else ec.message),
         )
     }
 
