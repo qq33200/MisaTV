@@ -6,6 +6,7 @@ import '../player/external_players.dart';
 import '../relay/local_relay.dart';
 import 'aria2_sidecar.dart';
 import 'bt_stream.dart';
+import 'libtorrent_engine.dart';
 import 'magnet.dart';
 import 'xunlei_cloud.dart';
 
@@ -26,6 +27,22 @@ const Duration _streamGateStall = Duration(minutes: 2);
 /// 会话回收：空闲多久停 / 最多同时保留几个。
 const Duration _idleStop = Duration(minutes: 10);
 const int _maxSessions = 3;
+
+/// libtorrent 桌面端契约：一次排 32 片，首片 2000ms，之后每片 +60ms；
+/// 播放器每读 8MB 重推一次 deadline（拖动进度条后也要立刻重排）。
+const int _libtorrentDeadlineHorizon = 32;
+const int _libtorrentFirstDeadlineMs = 2000;
+const int _libtorrentDeadlineStepMs = 60;
+const int _deadlineRepushBytes = 8 * 1024 * 1024;
+
+enum _BtEngine { libtorrent, aria2 }
+
+int _statusInt(Map<String, Object?>? status, String key) {
+  final value = status?[key];
+  if (value is int) return value;
+  if (value is num) return value.toInt();
+  return 0;
+}
 
 /// 磁力播放出口：
 ///   · `inline`：mp4/webm 等直接给本机中继地址（`/bt` 做 Range + piece 门控）；
@@ -86,7 +103,9 @@ class _BtSession {
     required this.fileLength,
     required this.fileOffset,
     required this.pieceLength,
+    required this.engine,
     this.complete = false,
+    this.lastDeadlinePush,
   });
 
   final String infoHash;
@@ -98,6 +117,10 @@ class _BtSession {
   final int fileLength;
   final int fileOffset;
   final int pieceLength;
+  final _BtEngine engine;
+
+  /// 最近一次给 libtorrent 排 deadline 的文件内字节位置；每 8MB 重推。
+  int? lastDeadlinePush;
   DateTime lastAccess = DateTime.now();
   bool complete;
 }
@@ -112,9 +135,11 @@ class TorrentPlay implements BtStreamSource {
     String downloadDir = '',
     this.customPlayers = _noPlayers,
     this.xunleiCloud,
+    LibtorrentEngine? libtorrent,
     void Function(String message)? logger,
   }) : _supportDir = supportDir,
        _downloadDir = downloadDir.trim(),
+       _libtorrent = libtorrent ?? LibtorrentEngine(logger: logger),
        _log = logger ?? ((_) {}) {
     _sidecar = Aria2Sidecar(
       supportDir: supportDir,
@@ -140,6 +165,8 @@ class TorrentPlay implements BtStreamSource {
     if (next == _downloadDir) return;
     _downloadDir = next;
     _sidecar.dispose();
+    // libtorrent 会话绑定了 save_path；目录变化时整会话停掉，下一次点播重建。
+    unawaited(_libtorrent.stop());
     _sessions.clear();
     _sidecar = Aria2Sidecar(
       supportDir: _supportDir,
@@ -150,6 +177,7 @@ class TorrentPlay implements BtStreamSource {
   }
 
   late Aria2Sidecar _sidecar;
+  final LibtorrentEngine _libtorrent;
   final Map<String, _BtSession> _sessions = {};
 
   /// 下载管理器复用同一个 aria2 进程（避免两个引擎抢端口/抢任务）。
@@ -186,6 +214,18 @@ class TorrentPlay implements BtStreamSource {
     if (session == null || session.fileIndex != fileIndex) return false;
     session.lastAccess = DateTime.now();
     if (session.complete) return true;
+    if (session.engine == _BtEngine.libtorrent) {
+      return _waitCoveredLibtorrent(
+        session,
+        infoHash,
+        fileIndex,
+        start,
+        end,
+        timeout: timeout,
+        stall: stall,
+        isCancelled: isCancelled,
+      );
+    }
     final timeoutMs = (timeout ?? _streamGateTimeout).inMilliseconds;
     final stallMs = (stall ?? _streamGateStall).inMilliseconds;
     final started = DateTime.now();
@@ -266,6 +306,100 @@ class TorrentPlay implements BtStreamSource {
     }
   }
 
+  /// libtorrent 门控：按 piece 查 havePieceRange；每 8MB 重推 deadline。
+  ///
+  /// 与 aria2 分支的关键区别：这里看的是 libtorrent 已经校验完成的 piece，
+  /// 再用文件长度兜底，避免把稀疏文件的零字节喂给播放器。未就绪时 `/bt`
+  /// 会在发响应头之前返回 503（见 LocalRelay._handleBt）。
+  Future<bool> _waitCoveredLibtorrent(
+    _BtSession session,
+    String infoHash,
+    int fileIndex,
+    int start,
+    int end, {
+    Duration? timeout,
+    Duration? stall,
+    bool Function()? isCancelled,
+  }) async {
+    final lastPush = session.lastDeadlinePush;
+    if (lastPush == null ||
+        start >= lastPush + _deadlineRepushBytes ||
+        start < lastPush) {
+      final ok = await _libtorrent.setSeekDeadlines(
+        infoHash,
+        fileIndex,
+        start,
+        horizon: _libtorrentDeadlineHorizon,
+        firstDeadlineMs: _libtorrentFirstDeadlineMs,
+        stepMs: _libtorrentDeadlineStepMs,
+      );
+      if (!ok) return false;
+      session.lastDeadlinePush = start;
+    }
+
+    final timeoutMs = (timeout ?? _streamGateTimeout).inMilliseconds;
+    final stallMs = (stall ?? _streamGateStall).inMilliseconds;
+    final started = DateTime.now();
+    var prevDone = -1;
+    var prevAt = started;
+    var round = 0;
+    while (true) {
+      if (isCancelled?.call() == true) {
+        _log('libtorrent 门控已取消：${infoHash.substring(0, 8)}');
+        return false;
+      }
+
+      final range = piecesForByteRange(
+        session.fileOffset,
+        session.pieceLength,
+        start,
+        end,
+      );
+      final covered = await _libtorrent.havePieceRange(
+        infoHash,
+        range.first,
+        range.last,
+      );
+      if (covered && _fileHasBytes(session.absPath, end + 1)) return true;
+
+      final status = await _libtorrent.status(infoHash);
+      final done = _statusInt(status, 'wantedDone') > 0
+          ? _statusInt(status, 'wantedDone')
+          : _statusInt(status, 'done');
+      if (done != prevDone) {
+        prevDone = done;
+        prevAt = DateTime.now();
+      }
+      if (round % 15 == 0) {
+        _log(
+          'libtorrent 门控等待 ${round * 200}ms：hash=${infoHash.substring(0, 8)} '
+          '[$start,$end] pieces=[${range.first},${range.last}] '
+          'done=$done peers=${_statusInt(status, 'peers')} '
+          'seeds=${_statusInt(status, 'seeds')} '
+          'speed=${_statusInt(status, 'downloadRate')}B/s',
+        );
+      }
+
+      round++;
+      final now = DateTime.now();
+      if (now.difference(started).inMilliseconds > timeoutMs) {
+        _log(
+          'libtorrent 门控超时（${timeoutMs ~/ 1000}s）：'
+          '${infoHash.substring(0, 8)} [$start,$end] done=$done',
+        );
+        return false;
+      }
+      if (now.difference(prevAt).inMilliseconds > stallMs) {
+        _log(
+          'libtorrent 门控零进度放弃（${stallMs ~/ 1000}s 无新增）：'
+          '${infoHash.substring(0, 8)} [$start,$end] done=$done',
+        );
+        return false;
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+    }
+  }
+
   /// 磁盘上是否真的已有这么多字节（file-allocation=none 时文件是长出来的）。
   bool _fileHasBytes(String absPath, int need) {
     try {
@@ -318,8 +452,25 @@ class TorrentPlay implements BtStreamSource {
         onProgress?.call('迅雷云盘不可用，改用 aria2…');
       }
     } else {
-      _log('迅雷云盘未启用（未登录/开关关闭），改用 aria2');
+      _log('迅雷云盘未启用（未登录/开关关闭），改用 libtorrent/aria2');
     }
+
+    // WinBox 桌面端是 libtorrent 优先、aria2 只做回落。Muse 11-22 的
+    // 16:08 APK 已真机验证这条路线（拖动进度条可秒播），所以这里先走
+    // libtorrent；原生插件缺失 / 元数据失败再回落 aria2。
+    final ltOutcome = await _openWithLibtorrent(
+      magnet,
+      info: info,
+      title: title,
+      onProgress: onProgress,
+      isCancelled: isCancelled,
+    );
+    if (ltOutcome.reason == '已取消' ||
+        ltOutcome.kind != BtPlayKind.unsupported) {
+      return ltOutcome;
+    }
+    _log('libtorrent 不可用，回落 aria2：${ltOutcome.reason}');
+    onProgress?.call('libtorrent 不可用，改用 aria2…');
     return _openWithAria2(
       magnet,
       info: info,
@@ -327,6 +478,116 @@ class TorrentPlay implements BtStreamSource {
       onProgress: onProgress,
       isCancelled: isCancelled,
     );
+  }
+
+  Future<BtPlayOutcome> _openWithLibtorrent(
+    String magnet, {
+    required MagnetInfo info,
+    required String title,
+    void Function(String message)? onProgress,
+    bool Function()? isCancelled,
+  }) async {
+    if (_libtorrent.disabled) {
+      return const BtPlayOutcome.unsupported('libtorrent 原生插件不可用');
+    }
+    onProgress?.call('正在启动 libtorrent 引擎…');
+    await _reap();
+    try {
+      final opened = await _libtorrent.openMagnet(
+        magnet,
+        infoHash: info.infoHash,
+        saveDir: _downloadDir,
+        timeout: _metaTimeout,
+      );
+      if (opened == null) {
+        return const BtPlayOutcome.unsupported('libtorrent 引擎启动失败');
+      }
+      if (isCancelled?.call() == true) {
+        unawaited(_libtorrent.remove(opened.infoHash));
+        return const BtPlayOutcome.unsupported('已取消');
+      }
+
+      final files = [
+        for (final file in opened.files)
+          TorrentFile(
+            index: file.index,
+            path: file.path,
+            length: file.length,
+            offset: file.offset,
+          ),
+      ];
+      final pick = pickVideoFile(files, preferName: title);
+      if (pick == null) {
+        unawaited(_libtorrent.remove(opened.infoHash));
+        return const BtPlayOutcome.unsupported('种子内未找到视频文件（可能只是字幕/图片包）');
+      }
+      if (!await _libtorrent.selectFile(opened.infoHash, pick.index)) {
+        unawaited(_libtorrent.remove(opened.infoHash));
+        return const BtPlayOutcome.unsupported('libtorrent 选片失败');
+      }
+
+      final key = info.infoHash.toLowerCase();
+      final session = _BtSession(
+        infoHash: key,
+        // gid 字段在 libtorrent 分支不用；保留 1-based 文件序号便于排查。
+        gid: 'lt:${opened.infoHash}',
+        title: info.displayName.isNotEmpty
+            ? info.displayName
+            : pick.path.split(RegExp(r'[\\/]')).last,
+        fileName: pick.path,
+        fileIndex: pick.index,
+        absPath: pick.path,
+        fileLength: pick.length,
+        fileOffset: pick.offset,
+        pieceLength: opened.pieceLength,
+        engine: _BtEngine.libtorrent,
+        complete: pick.length == 0,
+      );
+      _sessions[key] = session;
+      _log(
+        'libtorrent 会话建立：${key.substring(0, 8)}「${session.title}」'
+        'file#${pick.index} ${(pick.length / 1048576).round()}MB',
+      );
+
+      onProgress?.call('正在等待首段数据…');
+      final deadlineOk = await _libtorrent.setSeekDeadlines(
+        key,
+        pick.index,
+        0,
+        horizon: _libtorrentDeadlineHorizon,
+        firstDeadlineMs: _libtorrentFirstDeadlineMs,
+        stepMs: _libtorrentDeadlineStepMs,
+      );
+      if (!deadlineOk) {
+        drop(key);
+        return const BtPlayOutcome.unsupported('libtorrent deadline 设置失败');
+      }
+      session.lastDeadlinePush = 0;
+
+      final gateEnd = btHeadGateBytes < pick.length - 1
+          ? btHeadGateBytes
+          : (pick.length - 1 < 0 ? 0 : pick.length - 1);
+      final ok = await waitCovered(
+        key,
+        pick.index,
+        0,
+        gateEnd,
+        timeout: _headGateTimeout,
+        stall: _headGateStall,
+        isCancelled: isCancelled,
+      );
+      if (!ok) {
+        drop(key);
+        if (isCancelled?.call() == true) {
+          return const BtPlayOutcome.unsupported('已取消');
+        }
+        return const BtPlayOutcome.unsupported('BT 缓冲超时（libtorrent 做种者过少）');
+      }
+      return _handOff(session, provider: 'BT · libtorrent');
+    } catch (e) {
+      _log('libtorrent 会话建立失败 $e');
+      return BtPlayOutcome.unsupported('libtorrent 会话建立失败：$e');
+    }
   }
 
   Future<BtPlayOutcome> _openWithAria2(
@@ -397,6 +658,7 @@ class TorrentPlay implements BtStreamSource {
         fileLength: pick.length,
         fileOffset: pick.offset,
         pieceLength: status.pieceLength,
+        engine: _BtEngine.aria2,
         complete: pick.length == 0,
       );
       _sessions[info.infoHash] = session;
@@ -478,7 +740,7 @@ class TorrentPlay implements BtStreamSource {
   }
 
   /// 会话 → 播放出口（内联 / 外部接力 / 不可用原因）。
-  BtPlayOutcome _handOff(_BtSession session) {
+  BtPlayOutcome _handOff(_BtSession session, {String provider = 'BT'}) {
     session.lastAccess = DateTime.now();
     final relay = LocalRelay.instance;
     if (!relay.running) {
@@ -492,6 +754,7 @@ class TorrentPlay implements BtStreamSource {
         infoHash: session.infoHash,
         fileIndex: session.fileIndex,
         title: session.title,
+        provider: provider,
       );
     }
     final players = detectExternalPlayers(custom: customPlayers());
@@ -508,7 +771,11 @@ class TorrentPlay implements BtStreamSource {
       return BtPlayOutcome.unsupported('外部播放器启动失败（${player.name}）');
     }
     _log('BT 外部接力：${player.name} ← $url（$block）');
-    return BtPlayOutcome.external(player: player.name, title: session.title);
+    return BtPlayOutcome.external(
+      player: player.name,
+      title: session.title,
+      provider: provider,
+    );
   }
 
   /// 迅雷云盘直链 → 内置播放（mp4/webm）或外部播放器接力。
@@ -567,7 +834,12 @@ class TorrentPlay implements BtStreamSource {
   void drop(String infoHash) {
     final session = _sessions.remove(infoHash);
     if (session == null) return;
-    unawaited(_sidecar.remove(session.gid).catchError((Object _) {}));
+    if (session.engine == _BtEngine.libtorrent) {
+      // 与桌面端一致：结束会话是 remove，不是只 pause。
+      unawaited(_libtorrent.remove(infoHash).catchError((Object _) {}));
+    } else {
+      unawaited(_sidecar.remove(session.gid).catchError((Object _) {}));
+    }
     _log('BT 会话结束：${infoHash.substring(0, 8)}');
   }
 
@@ -576,5 +848,6 @@ class TorrentPlay implements BtStreamSource {
       drop(infoHash);
     }
     _sidecar.dispose();
+    unawaited(_libtorrent.stop().catchError((Object _) {}));
   }
 }
