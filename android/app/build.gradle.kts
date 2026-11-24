@@ -152,7 +152,7 @@ chaquopy {
             install("charset_normalizer")
             install("idna")
             install("beautifulsoup4")
-            install("lxml")
+            install("wheels/lxml-5.3.0-0-cp311-cp311-android_24_arm64_v8a.whl")
             install("pycryptodome")
         }
     }}
