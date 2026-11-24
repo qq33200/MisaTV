@@ -24,6 +24,9 @@ void jsSpiderWorkerMain(Map<String, dynamic> args) {
       (k, v) => MapEntry(k.toString(), v.toString()),
     ),
     storagePath: (args['storage'] as String?) ?? '',
+    // 内置 curl（Android）/ 系统 curl.exe（Windows），由宿主 isolate 解包后传入。
+    curlExe: (args['curlExe'] as String?) ?? 'curl.exe',
+    cacertPath: args['cacert'] as String?,
   );
   final receive = ReceivePort();
   ready.send(receive.sendPort);
@@ -52,10 +55,21 @@ class _SiteRuntime {
 }
 
 class _JsWorker {
-  _JsWorker({required this.libs, required this.storagePath});
+  _JsWorker({
+    required this.libs,
+    required this.storagePath,
+    this.curlExe = 'curl.exe',
+    this.cacertPath,
+  });
 
   final Map<String, String> libs;
   final String storagePath;
+
+  /// curl 可执行文件路径：Windows 用系统 curl.exe，Android 用随包解包的 arm64 二进制。
+  final String curlExe;
+
+  /// Android 上给 curl 指定内置 CA bundle（curl-android 静态编译不带系统 CA）。
+  final String? cacertPath;
   final Map<String, _SiteRuntime> _runtimes = {};
   final Map<String, String> _moduleCache = {};
   final Map<String, String> _localStore = {};
@@ -504,6 +518,11 @@ class _JsWorker {
       if (redirect) {
         args.addAll(['-L', '--max-redirs', '8']);
       }
+      // Android 静态 curl 不带系统 CA，显式指定随包 cacert.pem；
+      // 首次 insecure 重试(-k)仍保留，CA 缺失/过期时还能兜底。
+      if (cacertPath != null && cacertPath!.isNotEmpty) {
+        args.addAll(['--cacert', cacertPath!]);
+      }
       if (insecure) args.add('-k');
       final m = method.toLowerCase();
       if (m == 'post') {
@@ -527,7 +546,7 @@ class _JsWorker {
     ProcessResult? result;
     try {
       result = Process.runSync(
-        'curl.exe',
+        curlExe,
         buildArgs(false),
         stdoutEncoding: null,
         stderrEncoding: null,
@@ -540,7 +559,7 @@ class _JsWorker {
           (stderrText.contains('SSL') || stderrText.contains('certificate'));
       if (sslFailed) {
         result = Process.runSync(
-          'curl.exe',
+          curlExe,
           buildArgs(true),
           stdoutEncoding: null,
           stderrEncoding: null,

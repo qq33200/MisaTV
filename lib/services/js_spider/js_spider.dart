@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:isolate';
 
 import 'package:crypto/crypto.dart' as crypto;
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
@@ -207,6 +208,8 @@ class JsSpiderService {
     try {
       await _loadLibs();
       final support = await getApplicationSupportDirectory();
+      // 准备内置 curl（Android）/ 系统 curl.exe（Windows），随 JS 蜘蛛 isolate 一起传入。
+      final curl = await _prepareCurl(support);
       // 每个执行器使用独立的 local 存储文件，避免多个 isolate 同时写同一份
       // 脚本本地状态；slot 0 沿用旧的 js_local.json，保证默认单执行器升级不丢状态。
       final storage = p.join(
@@ -227,7 +230,13 @@ class JsSpiderService {
       });
       handle.isolate = await Isolate.spawn(
         jsSpiderWorkerMain,
-        {'ready': receive.sendPort, 'libs': _libs, 'storage': storage},
+        {
+          'ready': receive.sendPort,
+          'libs': _libs,
+          'storage': storage,
+          'curlExe': curl.exe,
+          'cacert': curl.cacert,
+        },
         onError: receive.sendPort,
         onExit: receive.sendPort,
         errorsAreFatal: false,
@@ -253,6 +262,43 @@ class JsSpiderService {
       completer.complete();
     }
     return handle;
+  }
+
+  /// 准备 JS 蜘蛛用的 curl：Windows 直接用系统 curl.exe；Android 把随包的
+  /// arm64 静态 curl 与 cacert.pem 解到 support 目录并 chmod，返回绝对路径。
+  /// 结果与 Muse 16:08 交接版一致（libapp.so 内含 curl-android 引用）。
+  Future<_CurlBin> _prepareCurl(Directory support) async {
+    if (!Platform.isAndroid) {
+      return const _CurlBin('curl.exe', null);
+    }
+    final exe = File(p.join(support.path, 'curl', 'curl-android-arm64'));
+    final ca = File(p.join(support.path, 'curl', 'cacert.pem'));
+    try {
+      await exe.parent.create(recursive: true);
+      if (!exe.existsSync()) {
+        final data = await rootBundle.load('assets/curl/curl-android-arm64');
+        await exe.writeAsBytes(
+          data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes),
+          flush: true,
+        );
+      }
+      if (!ca.existsSync()) {
+        final data = await rootBundle.load('assets/curl/cacert.pem');
+        await ca.writeAsBytes(
+          data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes),
+          flush: true,
+        );
+      }
+      final chmod = await Process.run('chmod', ['755', exe.path]).catchError(
+        (_) => Process.run('/system/bin/chmod', ['755', exe.path]),
+      );
+      if (chmod.exitCode != 0) {
+        debugPrint('JS curl chmod 失败：${chmod.stderr}');
+      }
+    } catch (e) {
+      debugPrint('JS curl 解包失败：$e');
+    }
+    return _CurlBin(exe.path, ca.path);
   }
 
   Future<void> _loadLibs() async {
@@ -510,6 +556,12 @@ class JsSpiderService {
       receive.close();
     }
   }
+}
+
+class _CurlBin {
+  const _CurlBin(this.exe, this.cacert);
+  final String exe;
+  final String? cacert;
 }
 
 class _CachedScript {

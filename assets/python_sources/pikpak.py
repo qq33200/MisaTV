@@ -43,7 +43,12 @@ except Exception:  # pragma: no cover
 
 # 手机（影视壳 / WebHTV + Chaquopy）与 Windows Win-Box 共用的同一份源：
 # Windows 用 nt，Android 上是 posix；PIKPAK_MOBILE=1 可在电脑上模拟手机路径。
-MOBILE = (os.name != 'nt') or bool(os.environ.get('PIKPAK_MOBILE'))
+# 再加一层 Android 特征判断（/system/build.prop、ANDROID_ROOT），防止
+# 个别壳里 os.name 被认成 nt 时走错电脑版分支（9978 中继地址手机上没用）。
+_ANDROID = (sys.platform.startswith('linux') and
+            (os.path.exists('/system/build.prop') or
+             bool(os.environ.get('ANDROID_ROOT'))))
+MOBILE = (os.name != 'nt') or _ANDROID or bool(os.environ.get('PIKPAK_MOBILE'))
 
 
 def _img_url(link):
@@ -179,6 +184,9 @@ def _normalize_share_link(link):
         url += '?pwd=' + urllib.parse.quote(urllib.parse.unquote(pwd.group(1)))
     return url
 
+
+# 已确认失效的链接内目录 ID：命中后直接回退根目录，省掉一次必失败的 detail 请求
+_BAD_FOLDER_IDS = {}
 
 UA = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
       '(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36')
@@ -334,6 +342,7 @@ class Spider(object):
         self._files_cache = {}
         self._state_path = ''
         self._state = {'recent': [], 'created': [], 'csv': []}
+        self._disk_cache = {}
 
     # ------------------------------------------------------------------ 生命周期
     def getName(self):
@@ -411,7 +420,12 @@ class Spider(object):
                     obj = json.load(fh)
                 if isinstance(obj, dict):
                     ext = dict(ext)
-                    ext.update(obj)
+                    for k, v in obj.items():
+                        # 空值不覆盖 ext：模板里留空的 "proxy": "" 曾把源里配好的代理清掉，
+                        # 手机上表现为「分享功能在当前地区不可用」。
+                        if v in ('', None, [], {}):
+                            continue
+                        ext[k] = v
             except Exception as exc:
                 print('[pikpak] 读取 pikpak-config.json 失败: %s' % exc)
         return ext
@@ -607,8 +621,32 @@ class Spider(object):
                     self._state['paste'] = obj.get('paste') if isinstance(obj.get('paste'), list) else []
         except Exception:
             pass
+        self._dc_load()
         if MOBILE:
             self._merge_phone_sync()
+        self._heal_stored_passwords()
+
+    def _heal_stored_passwords(self):
+        """就地修复旧版本导入时丢了提取码的已存链接：链接里没 pwd，但标题里
+        写着「提取码：xxxx」时，把密码补到链接上并写回，不用重新导入。
+        （密码只在 CSV 文件里、标题里也没有的，无法从已存数据里找回，
+        那种仍需重新导入一次。）"""
+        changed = False
+        for key in ('csv', 'recent'):
+            rows = self._state.get(key) or []
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                url = str(row.get('u') or '')
+                if not url or 'pwd=' in url or 'pass_code=' in url:
+                    continue
+                pwd = self._share_pwd(str(row.get('n') or ''))
+                if not pwd:
+                    continue
+                row['u'] = url + ('&' if '?' in url else '?') + 'pwd=' + urllib.parse.quote(pwd)
+                changed = True
+        if changed:
+            self._save_state()
 
     def _merge_phone_sync(self):
         """手机端自动合并电脑导出的 pikpak-sync.json（按链接去重，不覆盖本地记录）。"""
@@ -644,6 +682,40 @@ class Spider(object):
                 print('[pikpak] 同步记录失败：%s' % str(exc)[:80])
             break
 
+    def _cache_file(self):
+        base = os.path.dirname(self._state_path) if self._state_path else tempfile.gettempdir()
+        return os.path.join(base, 'pikpak-cache.json')
+
+    def _dc_load(self):
+        try:
+            path = self._cache_file()
+            if os.path.isfile(path):
+                obj = json.load(open(path, encoding='utf-8'))
+                if isinstance(obj, dict):
+                    self._disk_cache = obj
+        except Exception:
+            self._disk_cache = {}
+
+    def _dc_get(self, kind, key, ttl):
+        entry = (self._disk_cache.get(kind) or {}).get(str(key))
+        if isinstance(entry, dict) and entry.get('t', 0) + ttl > time.time():
+            return entry.get('v')
+        return None
+
+    def _dc_set(self, kind, key, value):
+        try:
+            bucket = self._disk_cache.setdefault(kind, {})
+            bucket[str(key)] = {'v': value, 't': time.time()}
+            if len(bucket) > 500:
+                for k in list(bucket)[:200]:
+                    bucket.pop(k, None)
+            tmp = self._cache_file() + '.tmp'
+            with open(tmp, 'w', encoding='utf-8') as fh:
+                json.dump(self._disk_cache, fh, ensure_ascii=False)
+            os.replace(tmp, self._cache_file())
+        except Exception:
+            pass
+
     def _save_state(self):
         if not self._state_path:
             return
@@ -668,19 +740,30 @@ class Spider(object):
         self._save_state()
         return count
 
-    def _remember(self, url, name):
+    def _remember(self, url, name, dir_id=None, dir_name=None):
         if not self.remember_recent or not url:
             return
         recent = [x for x in self._state.get('recent', []) if isinstance(x, dict) and x.get('u') != url]
+        entry = {'u': url, 'n': name or '', 't': int(time.time())}
         # 已有真实名称就别被「PikPak 分享 xxxx」覆盖
         for x in self._state.get('recent', []):
             if isinstance(x, dict) and x.get('u') == url:
                 old_name = str(x.get('n') or '').strip()
                 if old_name and not old_name.startswith('PikPak 分享') and old_name.lower() != 'pikpak':
                     if not name or str(name).startswith('PikPak 分享'):
-                        name = old_name
+                        entry['n'] = old_name
+                # 单链自动下钻的结果要留着：下次点「浏览目录」直接进最深层，少跑几次请求
+                if dir_id:
+                    entry['dir'] = str(dir_id)
+                    entry['dn'] = str(dir_name or '')
+                elif x.get('dir'):
+                    entry['dir'] = str(x.get('dir'))
+                    entry['dn'] = str(x.get('dn') or '')
                 break
-        recent.insert(0, {'u': url, 'n': name or '', 't': int(time.time())})
+        if dir_id:
+            entry['dir'] = str(dir_id)
+            entry['dn'] = str(dir_name or '')
+        recent.insert(0, entry)
         self._state['recent'] = recent[:120]
         self._save_state()
 
@@ -710,9 +793,16 @@ class Spider(object):
         sid, pid = self._parse_share(url)
         if not sid:
             raise PikPakError('不是有效的 PikPak 分享链接：%s' % url)
+        if pid and _BAD_FOLDER_IDS.get(pid, 0) > time.time():
+            print('[pikpak] 链接里的目录 ID 已失效，直接回退根目录')
+            pid = ''
         hit = self._share_cache.get(url)
         if hit and time.time() - hit[3] < 600 and hit[0] == sid:
             return hit[0], hit[1], hit[2]
+        saved = self._dc_get('session', url, 1800)
+        if isinstance(saved, list) and len(saved) >= 3 and saved[0] == sid:
+            self._share_cache[url] = (saved[0], saved[1], saved[2], time.time())
+            return saved[0], saved[1], saved[2]
         pwd = self._share_pwd(url)
         if pwd:
             # 带提取码：先用 /drive/v1/share 换取 pass_code_token，再走 detail。
@@ -731,6 +821,7 @@ class Spider(object):
             if not obj.get('next_page_token'):
                 self._files_cache[(sid, pid or '', pct)] = (time.time(), files[:self.max_files])
             self._share_cache[url] = (sid, pid, pct, time.time())
+            self._dc_set('session', url, [sid, pid, pct])
             return sid, pid, pct
         # 大多数公开分享不需要先访问分享页；直接调 detail 能省 1.5~2s。
         # 需要提取码/风控的分享再回退去拿 passcode cookie。
@@ -740,6 +831,7 @@ class Spider(object):
             if not obj.get('next_page_token'):
                 self._files_cache[(sid, pid or '', '')] = (time.time(), files[:self.max_files])
             self._share_cache[url] = (sid, pid, '', time.time())
+            self._dc_set('session', url, [sid, pid, ''])
             return sid, pid, ''
         except RegionBlocked:
             raise
@@ -757,6 +849,7 @@ class Spider(object):
                 if cookie.name.endswith('_' + sid):
                     break
         self._share_cache[url] = (sid, pid, pct, time.time())
+        self._dc_set('session', url, [sid, pid, pct])
         return sid, pid, pct
 
     def _share_page(self, sid, pid, pct, page_token=''):
@@ -899,7 +992,8 @@ class Spider(object):
                     if nm and nm.lower() != 'pikpak':
                         return nm
                 except Exception:
-                    pass
+                    if pid:
+                        _BAD_FOLDER_IDS[pid] = time.time() + 3600
             files = self._share_files_safe(sid, pid, pct, time.time() + budget)
             # 有些分享根目录只有一个叫 "PikPak" 的壳文件夹，往里再走一层
             if len(files) == 1 and files[0].get('kind') == 'drive#folder' and str(files[0].get('name') or '').strip().lower() == 'pikpak':
@@ -1186,6 +1280,63 @@ class Spider(object):
         return out
 
     # ------------------------------------------------------------------ CatVod 接口
+    def _manage_recent_items(self):
+        """「管理解析记录」页：全选删除 + 每条单删。"""
+        recent = self._state.get('recent') or []
+        items = [{
+            'vod_id': 'recent.del.all',
+            'vod_name': '☑ 全选删除（全部 %d 条）' % len(recent),
+            'vod_pic': '', 'vod_remarks': '点此确认全部删除',
+            'vod_content': '确认后清空「外部解析」里的全部记录（不影响资源站/网盘）。',
+        }]
+        for i, entry in enumerate(recent):
+            if not isinstance(entry, dict):
+                continue
+            name = str(entry.get('n') or '') or ('PikPak 分享 ' + str(entry.get('u') or '')[:8])
+            items.append({
+                'vod_id': 'recent.del.%d' % i,
+                'vod_name': '🗑 删除：' + name,
+                'vod_pic': '', 'vod_remarks': '单条删除',
+                'vod_content': '分享链接：%s' % str(entry.get('u') or ''),
+            })
+        return items
+
+    def _manage_csv_items(self):
+        """「管理 CSV 导入」页：全选删除 + 每条单删。"""
+        rows = self._state.get('csv') or []
+        items = [{
+            'vod_id': 'csv.del.all',
+            'vod_name': '☑ 全选删除（全部 %d 条）' % len(rows),
+            'vod_pic': '', 'vod_remarks': '点此确认全部删除',
+            'vod_content': '确认后清空「CSV 导入」里的全部记录。',
+        }]
+        for i, row in enumerate(rows):
+            if not isinstance(row, dict):
+                continue
+            url = str(row.get('u') or '')
+            name = str(row.get('n') or '').strip() or ('PikPak 分享 ' + self._parse_share(url)[0][:8])
+            items.append({
+                'vod_id': 'csv.del.%d' % i,
+                'vod_name': '🗑 删除：' + name,
+                'vod_pic': '', 'vod_remarks': '单条删除',
+                'vod_content': '分享链接：%s' % url,
+            })
+        return items
+
+    def _forget_csv(self, indexes=None):
+        """删 CSV 导入记录：indexes=None 全删，否则按下标删。返回删掉的条数。"""
+        rows = self._state.get('csv') or []
+        if indexes is None:
+            count = len(rows)
+            self._state['csv'] = []
+        else:
+            drop = set(int(i) for i in indexes)
+            kept = [item for i, item in enumerate(rows) if i not in drop]
+            count = len(rows) - len(kept)
+            self._state['csv'] = kept
+        self._save_state()
+        return count
+
     def homeContent(self, filter):
         classes = []
         classes.append({'type_id': 'recent', 'type_name': '外部解析'})
@@ -1231,24 +1382,9 @@ class Spider(object):
                 items = self._csv_items(force_import=True)
                 return self._page(items, page)
             if tid == 'recent.manage':
-                recent = self._state.get('recent') or []
-                items = [{
-                    'vod_id': 'recent.del.all',
-                    'vod_name': '☑ 全选删除（全部 %d 条）' % len(recent),
-                    'vod_pic': '', 'vod_remarks': '点此确认全部删除',
-                    'vod_content': '确认后清空「外部解析」里的全部记录（不影响资源站/网盘）。',
-                }]
-                for i, entry in enumerate(recent):
-                    if not isinstance(entry, dict):
-                        continue
-                    name = str(entry.get('n') or '') or ('PikPak 分享 ' + str(entry.get('u') or '')[:8])
-                    items.append({
-                        'vod_id': 'recent.del.%d' % i,
-                        'vod_name': '🗑 删除：' + name,
-                        'vod_pic': '', 'vod_remarks': '单条删除',
-                        'vod_content': '分享链接：%s' % str(entry.get('u') or ''),
-                    })
-                return self._page(items, page)
+                return self._page(self._manage_recent_items(), page)
+            if tid == 'csv.manage':
+                return self._page(self._manage_csv_items(), page)
             if tid == 'mine':
                 if not self.token:
                     raise AuthRequired('未配置 PikPak Token')
@@ -1343,6 +1479,10 @@ class Spider(object):
                     '2. 搜出来每条链接都是一个分享文件夹；\n'
                     '3. 点结果顶部的「📌 导入全部 N 条到 CSV」，就保存到「CSV 导入」列表了，'
                     '下次直接打开就能看，不用再粘贴。')]}
+            if vid == 'recent.manage':
+                return {'list': self._manage_recent_items()}
+            if vid == 'csv.manage':
+                return {'list': self._manage_csv_items()}
             if vid == 'recent.del.all':
                 n = self._forget_recent(None)
                 return {'list': [self._info_item('已全选删除 %d 条记录' % n,
@@ -1352,6 +1492,15 @@ class Spider(object):
                 n = self._forget_recent([idx])
                 return {'list': [self._info_item('已删除 %d 条记录' % n,
                                                  '「外部解析」记录已更新。')]}
+            if vid == 'csv.del.all':
+                n = self._forget_csv(None)
+                return {'list': [self._info_item('已全选删除 %d 条记录' % n,
+                                                 '「CSV 导入」记录已清空。')]}
+            if vid.startswith('csv.del.'):
+                idx = int(vid.rsplit('.', 1)[-1] or -1)
+                n = self._forget_csv([idx])
+                return {'list': [self._info_item('已删除 %d 条记录' % n,
+                                                 '「CSV 导入」记录已更新。')]}
             if vid.startswith('s.'):
                 return {'list': [self._share_detail(_b64d(vid[2:]))]}
             if vid.startswith('fld.'):
@@ -1467,12 +1616,20 @@ class Spider(object):
 
     def playerContent(self, flag, id, vipFlags):
         vid = str(id or '')
+        # 图片条目/图片直链：影视壳的播放器（fvp/ExoPlayer）解不了图片，MisaTV 还会
+        # 主动拦下图床地址并弹「源站解析异常」，所以这里直接给一条明确指引，
+        # 别让用户看到"无法识别"，也别让播放器去解图片导致闪退。
+        if vid.startswith('i.') or (vid.lower().startswith('http') and
+                                    _is_image({'name': urllib.parse.urlparse(vid).path})):
+            return {'parse': 0, 'playUrl': '', 'url': '', 'header': self._play_headers(),
+                    'msg': '这是图片，不是视频：回到详情页点上方海报即可放大查看（可双指缩放）'}
         if len(vid) > 2 and vid[1] == '.':
             data = _unpack(vid[2:])
         else:
             data = _unpack(vid)
         try:
             if data.get('t') == 's':
+                self._remember_play(data)
                 return self._play_share(data, str(flag or ''))
             if data.get('t') == 'd':
                 return self._play_drive(data)
@@ -1556,7 +1713,13 @@ class Spider(object):
                 url = str(it.get('u') or '').strip()
                 if not url:
                     continue
-                rows.append({'u': _normalize_share_link(url), 'n': str(it.get('n') or '')[:120]})
+                u = _normalize_share_link(url)
+                # 提取码写在标题里（中继只回链接+标题）：补到链接上再存。
+                if 'pwd=' not in u and 'pass_code=' not in u:
+                    pwd = self._share_pwd(str(it.get('n') or ''))
+                    if pwd:
+                        u += ('&' if '?' in u else '?') + 'pwd=' + urllib.parse.quote(pwd)
+                rows.append({'u': u, 'n': str(it.get('n') or '')[:120]})
             self._state['csv'] = rows[:500]
             self._save_state()
             return rows
@@ -1588,6 +1751,11 @@ class Spider(object):
                             if not mm:
                                 continue
                             url3 = _normalize_share_link(mm.group(0))
+                            # 提取码写在行里另一处（「提取码：xxxx」或单独一列）：补到链接上。
+                            if 'pwd=' not in url3 and 'pass_code=' not in url3:
+                                pwd = self._share_pwd(line)
+                                if pwd:
+                                    url3 += ('&' if '?' in url3 else '?') + 'pwd=' + urllib.parse.quote(pwd)
                             parts = [x.strip().strip('"') for x in re.split(r'[,;\t]', line)]
                             nm = ''
                             for part in parts:
@@ -1668,6 +1836,11 @@ class Spider(object):
             'vod_name': '📋 粘贴链接批量导入',
             'vod_pic': '', 'vod_remarks': '去搜索粘贴',
             'vod_content': '在搜索框里一次粘贴多个 PikPak 链接，会自动识别；点结果顶部的「导入全部」即可保存到这里。',
+        }, {
+            'vod_id': 'csv.manage',
+            'vod_name': '🗑 管理 CSV 导入（单条删除 / 全选）',
+            'vod_pic': '', 'vod_tag': 'folder', 'vod_remarks': '%d 条' % len(rows),
+            'vod_content': '进入后可以单条删除，或一键全选删除全部记录。',
         }]
         if not rows:
             items.append({'vod_id': 'help', 'vod_name': '还没有导入任何 CSV',
@@ -1681,10 +1854,26 @@ class Spider(object):
         for row in rows:
             url = str(row.get('u') or '')
             name = str(row.get('n') or '').strip() or ('PikPak 分享 ' + self._parse_share(url)[0][:8])
-            items.append({'vod_id': 'n.' + _pack({'u': url, 'fid': ''}),
+            items.append({'vod_id': 'n.' + _pack({'u': url, 'fid': str(row.get('dir') or '')}),
                           'vod_name': name, 'vod_pic': '', 'vod_tag': 'folder',
                           'vod_remarks': 'CSV', 'vod_content': '分享链接：%s' % url})
         return items
+
+    def _remember_play(self, data):
+        """把可直播的剧集标识回写到解析记录，供历史页「继续播放」一键直达。"""
+        url = str(data.get('u') or '')
+        sid = self._parse_share(url)[0]
+        if not url or not sid:
+            return
+        for entry in self._state.get('recent') or []:
+            if not isinstance(entry, dict):
+                continue
+            u2 = str(entry.get('u') or '')
+            if u2 == url or self._parse_share(u2)[0] == sid:
+                entry['last_play'] = dict(data)
+                entry['last_at'] = time.time()
+                self._save_state()
+                return
 
     def _recent_items(self):
         try:
@@ -1699,7 +1888,14 @@ class Spider(object):
             name = str(entry.get('n') or '').strip()
             if not name or name.lower() == 'pikpak':
                 name = 'PikPak 分享 ' + self._parse_share(url)[0][:8]
-            out.append({'vod_id': 'n.' + _pack({'u': url, 'fid': ''}), 'vod_name': name, 'vod_pic': '',
+            last = entry.get('last_play')
+            if isinstance(last, dict) and last.get('fid') and last.get('t') == 's':
+                payload = dict(last)
+                out.append({'vod_id': 's.' + _pack(payload),
+                            'vod_name': '▶ 继续播放：' + name[:36], 'vod_pic': '',
+                            'vod_remarks': '续播 · ' + str(payload.get('n') or '')[:16],
+                            'vod_content': '直接播放上次这一集（无需再进目录）。'})
+            out.append({'vod_id': 'n.' + _pack({'u': url, 'fid': str(entry.get('dir') or '')}), 'vod_name': name, 'vod_pic': '',
                         'vod_tag': 'folder', 'vod_remarks': '最近解析', 'vod_content': '分享链接：%s' % url})
         return out
 
@@ -1929,22 +2125,28 @@ class Spider(object):
         sid, pid, pct = self._open_share(url)
         target = fid or pid
         files = self._share_files_safe(sid, target, pct)
-        # 根目录如果只有一个叫 "PikPak" 的壳文件夹，直接钻进去（不吞掉真正的子文件夹）
+        # 打开分享时，目录里只有一个文件夹、没有其他文件就直接钻进去：
+        # 这一层没有任何可选项，点进去也是唯一选择；链式单文件夹
+        # （根→A→B→视频）最多连钻 5 层，省掉两到三次点按。
+        # 壳文件夹 "PikPak" 也包含在内；多文件夹或有视频时不钻。
+        hops = 0
+        deep_name = ''
         if not fid:
-            hops = 0
-            while hops < 2:
+            while hops < 5:
                 folders = [x for x in files if x.get('kind') == 'drive#folder']
                 others = [x for x in files if x.get('kind') != 'drive#folder']
-                if len(folders) == 1 and not others and str(folders[0].get('name') or '').strip().lower() == 'pikpak':
-                    inner = str(folders[0].get('id') or '')
-                    if not inner:
-                        break
-                    target = inner
-                    files = self._share_files(sid, target, pct)
-                    hops += 1
-                    continue
-                break
-        self._remember(url, 'PikPak 分享 ' + sid[:8])
+                if len(folders) != 1 or others:
+                    break
+                inner = str(folders[0].get('id') or '')
+                if not inner:
+                    break
+                deep_name = str(folders[0].get('name') or '').strip() or deep_name
+                target = inner
+                files = self._share_files(sid, target, pct)
+                hops += 1
+        # 记住下钻结果：历史 / CSV 卡片下次直接进最深层，不用从分享根重钻
+        self._remember(url, deep_name or ('PikPak 分享 ' + sid[:8]),
+                       target if hops else None, deep_name)
         items = []
         # 顶部固定一条「播放整个文件夹」：把本目录（含子目录）的视频做成一个可连播的节目
         self._last_folder_target = target
@@ -2071,7 +2273,35 @@ class Spider(object):
             pass
         thumb = str(data.get('pic') or '')
         self._open_gallery(url, str(data.get('pdir') or ''), name)
-        # 统一走本机中继：/img 会带 UA 并把 PikPak 直链转成浏览器能显示的字节
+        # 同目录图片列表：做成「图片」线路的剧集，手机上点开进画廊连续看。
+        # 注意：分享里的 web_content_link（原图）要鉴权，直接 GET 会 403，
+        # 只有 thumbnail_link 能匿名访问（桌面版画廊也是只用缩略图），所以
+        # 剧集地址一律用缩略图，不再逐张调 file_info 取原图（还更快）。
+        # 列表本身走 _share_files 的 60 秒缓存，不额外多花一次列表请求。
+        episodes = []
+        try:
+            pdir = str(data.get('pdir') or '') or pid
+            files = self._share_files_safe(sid, pdir, pct)
+            imgs = [f for f in files if _is_image(f)]
+            imgs.sort(key=lambda x: _natural_key(str(x.get('name') or '')))
+            # 上限跟随列表上限（默认 300）；原先写死 40，110+ 张的图集只能翻到前 40 张。
+            imgs = imgs[:self.max_files]
+            for item in imgs:
+                iname = str(item.get('name') or '') or '图片'
+                link = str(item.get('thumbnail_link') or '')
+                if not link:
+                    continue
+                label = iname.replace('$', '＄').replace('#', '＃')
+                episodes.append('%s$%s' % (label, link))
+        except Exception as exc:
+            print('[pikpak] 同目录图片列表失败：%s' % str(exc)[:100])
+        # 兜底：列表取不到也至少能看当前这一张（用卡片自带的缩略图）。
+        if not episodes:
+            cur = thumb or direct
+            if cur:
+                label = name.replace('$', '＄').replace('#', '＃')
+                episodes.append('%s$%s' % (label, cur))
+        # 封面用缩略图（之前改成原图优先是错的：原图没登录打不开，封面直接没了）。
         show = thumb or direct
         proxy = _img_url(show)
         content = ('类型：PikPak 图片\n格式：%s\n大小：%s\n名称：%s\n'
@@ -2086,7 +2316,8 @@ class Spider(object):
         return {'vod_id': 'i.' + _pack({'u': url, 'fid': fid, 'n': name, 'sz': size, 'pic': thumb}),
                 'vod_name': name, 'vod_pic': proxy,
                 'vod_content': content, 'vod_remarks': '图片·' + ext.upper(),
-                'vod_play_from': '', 'vod_play_url': ''}
+                'vod_play_from': '图片' if episodes else '',
+                'vod_play_url': '#'.join(episodes) if episodes else ''}
 
     def _share_file_detail(self, data):
         url = str(data.get('u') or '')
@@ -2257,10 +2488,15 @@ class Spider(object):
         url = str(data.get('u') or '')
         if not url:
             raise PikPakError('播放参数缺失，请重新打开详情页')
-        sid, pid, pct = self._open_share(url)
+        sid0 = self._parse_share(url)[0]
         fid = str(data.get('fid') or '')
         if not fid:
             raise PikPakError('播放参数缺少文件 ID')
+        ck = sid0 + '|' + fid + '|' + str(flag or '')
+        cached = self._dc_get('play', ck, 1800)
+        if isinstance(cached, dict) and cached.get('url'):
+            return cached
+        sid, pid, pct = self._open_share(url)
         try:
             medias = self._share_medias(sid, fid, pct)
         except PikPakError:
@@ -2268,8 +2504,10 @@ class Spider(object):
         if not medias and self.token and self.use_token_restore:
             direct = self._restore_share(sid, fid, pct, str(data.get('n') or ''),
                                          data.get('anc') or [])
-            return {'parse': 0, 'playUrl': '', 'url': self._via_media_proxy(direct),
-                    'header': self._play_headers()}
+            result = {'parse': 0, 'playUrl': '', 'url': self._via_media_proxy(direct),
+                      'header': self._play_headers()}
+            self._dc_set('play', ck, result)
+            return result
         if not medias:
             if self.token:
                 raise PikPakError('公共模式没有取到直链。可把 ext 里的 use_token_restore 设为 true，'
@@ -2282,6 +2520,7 @@ class Spider(object):
             original = next((m for m in medias if '原画' in str(m.get('name') or '')), None)
             if original and picked and picked != original.get('url'):
                 result['msg'] = '原画线路较慢，已自动切到更快的转码线路（可在 ext 里设 prefer=quality 固定原画）'
+        self._dc_set('play', ck, result)
         return result
 
     def _play_drive(self, data):

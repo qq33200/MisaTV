@@ -74,3 +74,4 @@ flutter:
     - assets/jvm/
     - assets/jvm/shell-real/
     - assets/aria2/
+    - assets/curl/
