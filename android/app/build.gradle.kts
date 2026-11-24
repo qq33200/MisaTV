@@ -1,3 +1,25 @@
+// WinBox: 优先找 runner 上的 Python 3.12。Chaquopy 需要与 app 内的
+// Python 版本一致；lxml/pycryptodome 目前只有 <=3.13 的 Android wheel。
+fun findBuildPython(): String? {
+    val direct = listOf("/usr/bin/python3.12", "/usr/local/bin/python3.12")
+    for (p in direct) {
+        val f = java.io.File(p)
+        if (f.canExecute()) return f.absolutePath
+    }
+    val root = java.io.File("/opt/hostedtoolcache/Python")
+    if (root.isDirectory) {
+        val dirs = root.listFiles()?.sortedByDescending { it.name } ?: emptyArray()
+        for (dir in dirs) {
+            if (!dir.name.startsWith("3.12")) continue
+            for (rel in listOf("x64/bin/python3", "x64/bin/python3.12")) {
+                val f = java.io.File(dir, rel)
+                if (f.canExecute()) return f.absolutePath
+            }
+        }
+    }
+    return null
+}
+
 import java.io.FileInputStream
 import java.util.Properties
 
@@ -116,7 +138,6 @@ chaquopy {
         // 配合上面的 abiFilters.clear() 只打 arm64，避免 3.12 不支持 32 位 ABI。
         version = "3.14"
         // runner 的 python3 是 3.14，Chaquopy 17.2 支持到 3.14。
-        buildPython("python3")
         pip {
             install("requests")
             install("urllib3")
