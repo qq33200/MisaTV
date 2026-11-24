@@ -114,9 +114,8 @@ chaquopy {
     defaultConfig {
         // 用构建机自带 Python 3.12（ubuntu-latest 默认即有），
         // 配合上面的 abiFilters.clear() 只打 arm64，避免 3.12 不支持 32 位 ABI。
-        version = "3.12"
-        // ubuntu-latest 自带 Python 3.12，但没有 python3.12 这个名字；
-        // 显式指向 python3，Chaquopy 会校验版本是否为 3.12。
+        version = "3.14"
+        // runner 的 python3 是 3.14，Chaquopy 17.2 支持到 3.14。
         buildPython("python3")
         pip {
             install("requests")
