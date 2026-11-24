@@ -1,3 +1,6 @@
+import java.io.FileInputStream
+import java.util.Properties
+
 // WinBox: 优先找 runner 上的 Python 3.12。Chaquopy 需要与 app 内的
 // Python 版本一致；lxml/pycryptodome 目前只有 <=3.13 的 Android wheel。
 fun findBuildPython(): String? {
@@ -20,8 +23,6 @@ fun findBuildPython(): String? {
     return null
 }
 
-import java.io.FileInputStream
-import java.util.Properties
 
 plugins {
     id("com.android.application")
