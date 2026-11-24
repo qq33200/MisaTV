@@ -55,6 +55,9 @@ android {
         versionName = flutter.versionName
         // Chaquopy 的 CPython 是原生组件：ABI 必须在 android.defaultConfig.ndk 里限制。
         ndk {
+            // Flutter 在 debug variant 会先塞入 armeabi-v7a/arm64-v8a/x86_64；
+            // 只 += 会保留 32 位，Chaquopy 3.12 不接受 armeabi-v7a。先清空再指定。
+            abiFilters.clear()
             abiFilters += listOf("arm64-v8a")
         }
     }
@@ -109,9 +112,9 @@ flutter {
 // pycryptodome 在 Chaquopy 仓库有 Android wheel，requests 族为纯 Python。
 chaquopy {
     defaultConfig {
-        // Python 3.11 同时提供 arm64-v8a 与 armeabi-v7a 运行时；Flutter 在 debug
-        // variant 仍可能带入 32 位 ABI，用 3.12 会在配置期直接报 ABI 不受支持。
-        version = "3.11"
+        // 用构建机自带 Python 3.12（ubuntu-latest 默认即有），
+        // 配合上面的 abiFilters.clear() 只打 arm64，避免 3.12 不支持 32 位 ABI。
+        version = "3.12"
         pip {
             install("requests")
             install("urllib3")
