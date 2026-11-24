@@ -18,5 +18,7 @@ class MainActivity : FlutterActivity() {
         flutterEngine.plugins.add(PySpiderPlugin())
         // 系统级打开动作（MethodChannel com.winbox/system）：打开文件夹/文件。
         flutterEngine.plugins.add(SystemActionsPlugin())
+        // libtorrent 磁力引擎（MethodChannel com.winbox/libtorrent）。
+        flutterEngine.plugins.add(LibtorrentPlugin())
     }
 }
