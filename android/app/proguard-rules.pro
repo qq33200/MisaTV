@@ -39,3 +39,9 @@
 -dontwarn org.codehaus.mojo.animal_sniffer.**
 -dontwarn java.lang.invoke.**
 -dontwarn sun.misc.**
+
+# libtorrent4j 的 JNI 入口和 SWIG 类被 native/反射调用，R8 不能裁剪或混淆。
+-keep class org.libtorrent4j.** { *; }
+-keep class com.winbox.LibtorrentBridge { *; }
+-keep class com.winbox.LibtorrentPlugin { *; }
+-dontwarn org.libtorrent4j.**
