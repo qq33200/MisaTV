@@ -129,6 +129,10 @@ dependencies {
     implementation("com.google.code.gson:gson:2.10.1")
     implementation("org.jsoup:jsoup:1.16.1")
     implementation("com.alibaba:fastjson:1.2.83")
+
+    // WinBox 桌面端同款 libtorrent：Android arm64 原生库（libtorrent4j.so）
+    // 随该 artifact 的 jar 打进 APK；只保留 arm64，避免包体翻倍。
+    implementation("org.libtorrent4j:libtorrent4j-android-arm64:2.1.0-39")
 }
 
 flutter {
