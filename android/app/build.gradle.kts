@@ -146,14 +146,10 @@ chaquopy {
         version = "3.14"
         // runner 的 python3 是 3.14，Chaquopy 17.2 支持到 3.14。
         pip {
-            options("--find-links", file("wheels").absolutePath)
             install("requests")
             install("urllib3")
             install("certifi")
             install("charset_normalizer")
             install("idna")
-            install("beautifulsoup4")
-            install("lxml==5.3.0")
-            install("pycryptodome")
         }
     }}
