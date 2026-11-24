@@ -2,20 +2,22 @@ import java.io.File
 import java.io.FileInputStream
 import java.util.Properties
 
-// WinBox: 优先找 runner 上的 Python 3.12。Chaquopy 需要与 app 内的
-// Python 版本一致；lxml/pycryptodome 目前只有 <=3.13 的 Android wheel。
+// WinBox: 找 runner 上的 Python 3.11。Chaquopy 的 lxml/pycryptodome
+// Android wheel 目前只覆盖到 3.11；3.12+ 会在 pip 阶段报无可用版本。
 fun findBuildPython(): String? {
-    val direct = listOf("/usr/bin/python3.12", "/usr/local/bin/python3.12")
-    for (p in direct) {
-        val f = File(p)
-        if (f.canExecute()) return f.absolutePath
+    // 返回值会打印在 CI 配置日志里，便于核对实际解释器
+    for (ver in listOf("3.11")) {
+        for (p in listOf("/usr/bin/python$ver", "/usr/local/bin/python$ver")) {
+            val f = File(p)
+            if (f.canExecute()) return f.absolutePath
+        }
     }
     val root = File("/opt/hostedtoolcache/Python")
     if (root.isDirectory) {
         val dirs: List<File> = root.listFiles()?.sortedByDescending { it.name } ?: emptyList()
         for (dir in dirs) {
-            if (!dir.name.startsWith("3.12")) continue
-            for (rel in listOf("x64/bin/python3", "x64/bin/python3.12")) {
+            if (!dir.name.startsWith("3.11")) continue
+            for (rel in listOf("x64/bin/python3", "x64/bin/python3.11")) {
                 val f = File(dir, rel)
                 if (f.canExecute()) return f.absolutePath
             }
@@ -32,6 +34,9 @@ plugins {
     // WinBox M1：Chaquopy，把 CPython 3.12 打进 APK 供 py 蜘蛛使用。
     id("com.chaquo.python")
 }
+
+val winboxBuildPython = findBuildPython()
+println("WinBox buildPython = $winboxBuildPython")
 
 android {
     namespace = "com.winbox"
