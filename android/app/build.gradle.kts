@@ -12,7 +12,7 @@ fun findBuildPython(): String? {
     }
     val root = File("/opt/hostedtoolcache/Python")
     if (root.isDirectory) {
-        val dirs = root.listFiles()?.sortedByDescending { it.name } ?: emptyArray<File>()
+        val dirs: List<File> = root.listFiles()?.sortedByDescending { it.name } ?: emptyList()
         for (dir in dirs) {
             if (!dir.name.startsWith("3.12")) continue
             for (rel in listOf("x64/bin/python3", "x64/bin/python3.12")) {
