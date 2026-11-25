@@ -4,7 +4,9 @@ import 'package:flutter/material.dart';
 
 import '../../app.dart';
 import '../../models/vod.dart';
+import '../../services/torrent/magnet.dart';
 import '../../state/app_state.dart';
+import '../pages/player/magnet_play.dart';
 import 'immersive_category_page.dart';
 import 'immersive_metrics.dart';
 import 'immersive_widgets.dart';
@@ -90,6 +92,15 @@ class _ImmersiveSearchPageState extends State<ImmersiveSearchPage> {
     _debounce?.cancel();
     final keyword = raw.trim();
     if (keyword.isEmpty) return;
+    // 粘贴磁力链接：只启用磁力播放，不当关键词去打全源搜索。
+    if (!auto) {
+      final magnet = magnetLinkOf(keyword);
+      if (magnet != null) {
+        _focus.unfocus();
+        unawaited(startMagnetPlay(context, magnet));
+        return;
+      }
+    }
     // 同一个词正在搜：输入框回填 / 连按回车不再重复发起。
     if (keyword == _keyword && _searching) return;
     if (_controller.text != keyword) {

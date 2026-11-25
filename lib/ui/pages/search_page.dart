@@ -6,6 +6,7 @@ import '../../app.dart';
 import '../../models/site_config.dart';
 import '../../models/vod.dart';
 import '../../services/matching/title_matching.dart';
+import '../../services/torrent/magnet.dart';
 import '../../state/app_state.dart';
 import '../widgets/empty_state.dart';
 import '../widgets/glass.dart';
@@ -14,6 +15,7 @@ import '../widgets/poster_card.dart';
 import '../widgets/source_variants_sheet.dart';
 import 'detail_page.dart';
 import 'folder_page.dart';
+import 'player/magnet_play.dart';
 
 class SearchPage extends StatefulWidget {
   const SearchPage({super.key});
@@ -424,6 +426,13 @@ class _SearchPageState extends State<SearchPage> {
   }
 
   void _search(String keyword) {
+    // 粘贴磁力链接：只启用磁力播放，不当关键词去打全源搜索。
+    final magnet = magnetLinkOf(keyword);
+    if (magnet != null) {
+      _focusNode.unfocus();
+      unawaited(startMagnetPlay(context, magnet));
+      return;
+    }
     final app = AppScope.of(context);
     final sites = _searchableSites(app);
     var query = keyword.trim();

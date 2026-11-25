@@ -108,6 +108,25 @@ MagnetInfo? parseMagnet(String uri) {
   return MagnetInfo(raw: raw, infoHash: infoHash, displayName: displayName, trackers: trackers);
 }
 
+/// 从一段粘贴文本里挑出磁力链接；没有则返回 null。
+///
+/// 搜索框粘磁链时**只能**走磁力播放：整串丢给全源搜索既搜不到东西，还会把
+/// 几十个源全打一遍（体验上就是「转半天没结果」）。这里只认带 `magnet:?` 的
+/// 片段，纯关键词（含只写了 "magnet" 的搜索词）不会误命中。
+String? magnetLinkOf(String text) {
+  final raw = text.trim();
+  if (raw.isEmpty) return null;
+  // 粘一坨文本时取第一条磁链；引号与尖括号、空白都视为终止符
+  final match = RegExp(
+    r'''magnet:\?[^\s"'<>]+''',
+    caseSensitive: false,
+  ).firstMatch(raw);
+  if (match == null) return null;
+  final link = match.group(0)!;
+  // 必须能解析出 infoHash（缺 xt=urn:btih: 的残链不当作磁力）
+  return parseMagnet(link) == null ? null : link;
+}
+
 String _decode(String value) {
   try {
     return Uri.decodeComponent(value);
