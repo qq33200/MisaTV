@@ -51,14 +51,130 @@ _ANDROID = (sys.platform.startswith('linux') and
 MOBILE = (os.name != 'nt') or _ANDROID or bool(os.environ.get('PIKPAK_MOBILE'))
 
 
+def _log(msg):
+    """日志输出，任何壳里都不会因为控制台编码炸掉。
+
+    影视壳的 stdout 编码不可控（TVBox Windows 是 GBK/CP936，部分壳重定向成
+    ascii）。直接用 print 中文会抛 UnicodeEncodeError，而这个异常是从
+    searchContent / _share_root_name 里冒出来的，会把整次搜索打断。这里
+    兜住编码异常，最差也只是丢一行日志。
+    """
+    try:
+        print(msg)
+    except UnicodeEncodeError:
+        try:
+            enc = (getattr(sys.stdout, 'encoding', None) or 'ascii')
+            print(str(msg).encode(enc, 'replace').decode(enc, 'replace'))
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
+# Win-Box 本机中继（/img、/import-csv、/galleryopen）。只在确认同一台机器上
+# 真有这个服务时才用，别的壳没有这个端口，硬拼进去只会得到一张裂图。
+_RELAY_BASE = 'http://127.0.0.1:9978'
+_relay_alive = None
+_relay_checked_at = 0.0
+
+
+def _relay_ok():
+    """探测 Win-Box 中继是否在线（结果缓存 60 秒，避免每次列表都连一次）。"""
+    global _relay_alive, _relay_checked_at
+    now = time.time()
+    if _relay_alive is not None and now - _relay_checked_at < 60:
+        return _relay_alive
+    ok = False
+    try:
+        sock = socket.create_connection(('127.0.0.1', 9978), timeout=0.25)
+        sock.close()
+        ok = True
+    except Exception:
+        ok = False
+    _relay_alive = ok
+    _relay_checked_at = now
+    return ok
+
+
+# ---- 可写目录探测（安卓壳最容易在这儿翻车）----
+_WRITABLE_DIR = None
+
+
+def _writable_dir():
+    """找一个真能写文件的目录，按壳的差异逐个试。
+
+    Android 上的坑比 PC 多得多：
+      * `tempfile.gettempdir()` 常被算成 `/tmp`，而 Android 根本没有 /tmp，
+        一写就 FileNotFoundError，于是「解析记录 → CSV 导入」每次启动都清空；
+      * 脚本常被壳解包到 APK 内的只读 assets，`__file__` 同级写不进去；
+      * Android 11+ 的 /sdcard 直接访问会 PermissionError（分区存储）。
+    这里依次尝试脚本目录 → 应用私有目录 → 共享存储 → 系统临时目录，
+    谁先写成功用谁；全都不行就返回空串，让调用方退化成纯内存模式而不是崩。
+    """
+    global _WRITABLE_DIR
+    if _WRITABLE_DIR is not None:
+        return _WRITABLE_DIR
+    cands = []
+    try:
+        if '__file__' in globals():
+            cands.append(os.path.dirname(os.path.abspath(__file__)))
+    except Exception:
+        pass
+    for env_name in ('PIKPAK_HOME', 'TVBOX_HOME', 'EXTERNAL_STORAGE',
+                     'ANDROID_STORAGE', 'ANDROID_DATA', 'HOME',
+                     'TMPDIR', 'TEMP', 'TMP'):
+        v = str(os.environ.get(env_name) or '').strip()
+        if v:
+            cands.append(v)
+    cands += [
+        os.path.join(os.path.expanduser('~'), '.pikpak'),
+        '/data/local/tmp',
+        '/storage/emulated/0/Android/data/com.winbox.app/files',
+        '/storage/emulated/0/Download',
+        '/sdcard/Download',
+    ]
+    try:
+        cands.append(tempfile.gettempdir())
+    except Exception:
+        pass
+    for path in cands:
+        try:
+            os.makedirs(path, exist_ok=True)
+            probe = os.path.join(path, '.pikpak-write-test')
+            with open(probe, 'w', encoding='utf-8') as fh:
+                fh.write('1')
+            os.remove(probe)
+            _WRITABLE_DIR = path
+            return path
+        except Exception:
+            continue
+    _WRITABLE_DIR = ''
+    return ''
+
+
+def _state_file(name):
+    """可写目录 + 文件名；找不到可写目录时返回空串，调用方据此退化成内存模式。"""
+    base = _writable_dir()
+    if not base:
+        return ''
+    return os.path.join(base, name)
+
+
+
 def _img_url(link):
-    """电脑上走 Win-Box 本机 /img 中继；手机上直接用 PikPak 缩略图地址。"""
+    """缩略图地址：Win-Box 上走本机 /img 中继（可绕开防盗链），否则直链。
+
+    别的影视壳没有 9978 中继，返回 127.0.0.1 的地址只会是一张裂图，
+    所以必须先探测；探测失败就直接给原始地址，PikPak 缩略图本身可匿名访问。
+    """
     link = str(link or '')
     if not link:
         return ''
     if MOBILE:
         return link
-    return 'http://127.0.0.1:9978/img?u=' + urllib.parse.quote(link, safe='')
+    if not _relay_ok():
+        return link
+    return _RELAY_BASE + '/img?u=' + urllib.parse.quote(link, safe='')
 
 
 # ---- 懒人包：自动找代理，不需要单独配置文件 ----
@@ -78,6 +194,11 @@ def _app_proxy_candidates():
         '/storage/emulated/0/TV/proxy.json',
         '/sdcard/tvbox/TV/proxy.json',
         '/storage/emulated/0/tvbox/TV/proxy.json',
+        # 别的影视壳常用这些目录名，顺手一起找
+        '/storage/emulated/0/TVBox/TV/proxy.json',
+        '/storage/emulated/0/tvbox/proxy.json',
+        '/storage/emulated/0/Android/data/com.fongmi.android.tv/files/TV/proxy.json',
+        '/storage/emulated/0/Android/data/com.fongmi.android.tv/files/proxy.json',
     ]
     for path in paths:
         try:
@@ -95,23 +216,78 @@ def _app_proxy_candidates():
 
 
 def _probe_proxy(proxy):
-    """探测某个代理能不能让 PikPak 接口正常返回（非地区拦截）。"""
+    """探测某条网络（代理或直连）能不能正常访问 PikPak 的**分享接口**。
+
+    为什么不能图省事：
+      * `/drive/v1/files` 无论直连还是走代理都回 401 Unauthenticated，
+        两种情况一模一样，等于没测（早期版本就是这么写的，结果在大陆
+        永远判定「直连可用」，用户配了代理也白配）。
+      * 不带 captcha_token 时一律回 captcha_invalid，仍然区分不出地区。
+    所以这里必须先拿 captcha，再用一个真实存在的公开分享去打 share/detail：
+      * 大陆直连 → share_status = PROHIBITED（或文案含「地区不可用」）
+      * 可用网络 → PASS_CODE_EMPTY / PASS_CODE_ERROR / OK 等正常业务态
+    """
+    handlers = [urllib.request.ProxyHandler({})]
+    if proxy:
+        handlers = [urllib.request.ProxyHandler({'http': proxy, 'https': proxy})]
     try:
-        handlers = [urllib.request.ProxyHandler({})]
-        if proxy:
-            handlers = [urllib.request.ProxyHandler({'http': proxy, 'https': proxy})]
         opener = urllib.request.build_opener(*handlers)
-        req = urllib.request.Request(
-            'https://api-drive.mypikpak.com/drive/v1/files?limit=1',
-            headers={'User-Agent': 'Mozilla/5.0'},
-        )
-        with opener.open(req, timeout=1.5) as resp:
-            body = resp.read(2048).decode('utf-8', 'ignore')
-        if 'PROHIBITED' in body.upper() or '当前地区不可用' in body:
+        opener.addheaders = [('User-Agent', UA), ('Accept-Language', 'zh-CN,zh;q=0.9')]
+
+        action = 'GET:/drive/v1/share/detail'
+        payload = {
+            'client_id': CLIENT_ID, 'action': action, 'device_id': DEVICE_ID,
+            'captcha_token': '',
+            'meta': {
+                'captcha_sign': CAPTCHA_SIGN, 'client_version': 'undefined',
+                'package_name': 'drive.mypikpak.com', 'user_id': '',
+                'timestamp': '1758527222654',
+            },
+        }
+        cap_req = urllib.request.Request(
+            USER_BASE + '/v1/shield/captcha/init',
+            data=json.dumps(payload).encode('utf-8'), method='POST',
+            headers={'Content-Type': 'application/json', 'x-client-id': CLIENT_ID,
+                     'x-device-id': DEVICE_ID})
+        try:
+            with opener.open(cap_req, timeout=3.0) as resp:
+                cap = json.loads(resp.read(4096).decode('utf-8', 'ignore') or '{}')
+        except urllib.error.HTTPError as exc:
+            try:
+                cap = json.loads(exc.read(4096).decode('utf-8', 'ignore') or '{}')
+            except Exception:
+                cap = {}
+        token = str((cap or {}).get('captcha_token') or '')
+        if not token:
+            # 连验证令牌都拿不到：网络不通（不是地区受限）
             return False
-        return True
-    except urllib.error.HTTPError:
-        return True   # 401/403 说明网络通了
+
+        params = {
+            'limit': 1, 'thumbnail_size': 'SIZE_LARGE', 'order': '3',
+            'folders_first': 'true',
+            # 故意用一个不存在的 share_id：只为看地区拦截还是正常业务态。
+            # 大陆直连 → PROHIBITED；可用网络 → NOT_FOUND / PASS_CODE_* 之类。
+            # 这样不需要硬编码任何真实分享链接（也不会误读别人的内容）。
+            'share_id': 'probe0123456789abcdef', 'parent_id': '',
+            'pass_code_token': '',
+        }
+        url = (API_BASE + '/drive/v1/share/detail?' +
+               urllib.parse.urlencode(params, doseq=True))
+        det_req = urllib.request.Request(url, headers={
+            'accept': 'application/json', 'x-client-id': CLIENT_ID,
+            'x-device-id': DEVICE_ID, 'x-captcha-token': token})
+        try:
+            with opener.open(det_req, timeout=3.0) as resp:
+                body = resp.read(4096).decode('utf-8', 'ignore')
+        except urllib.error.HTTPError as exc:
+            try:
+                body = exc.read(4096).decode('utf-8', 'ignore')
+            except Exception:
+                body = ''
+        up = body.upper()
+        if 'PROHIBITED' in up or '地区不可用' in body:
+            return False
+        return bool(body)
     except Exception:
         return False
 
@@ -121,9 +297,9 @@ def _auto_proxy():
     if _AUTO_PROXY_CACHE is not None:
         return _AUTO_PROXY_CACHE
     # 落盘缓存：影视壳每次调用可能是新进程，避免每次都探测 6 个候选
-    cache_file = os.path.join(tempfile.gettempdir(), 'pikpak-auto-proxy.json')
+    cache_file = _state_file('pikpak-auto-proxy.json')
     try:
-        if os.path.isfile(cache_file):
+        if cache_file and os.path.isfile(cache_file):
             obj = json.load(open(cache_file, encoding='utf-8'))
             if obj.get('t', 0) + 6 * 3600 > time.time():
                 _AUTO_PROXY_CACHE = str(obj.get('p') or '')
@@ -140,11 +316,12 @@ def _auto_proxy():
     if len(app_proxies) == 1:
         _AUTO_PROXY_CACHE = app_proxies[0]
         try:
-            json.dump({'p': _AUTO_PROXY_CACHE, 't': time.time()},
-                      open(cache_file, 'w', encoding='utf-8'))
+            if cache_file:
+                json.dump({'p': _AUTO_PROXY_CACHE, 't': time.time()},
+                          open(cache_file, 'w', encoding='utf-8'))
         except Exception:
             pass
-        print('[pikpak] 使用 App 代理：%s' % _AUTO_PROXY_CACHE)
+        _log('[pikpak] 使用 App 代理：%s' % _AUTO_PROXY_CACHE)
         return _AUTO_PROXY_CACHE
     for x in app_proxies:
         if x not in candidates:
@@ -157,17 +334,31 @@ def _auto_proxy():
     # 4) 直连（手机全局 VPN 时可直接用）
     if '' not in candidates:
         candidates.append('')
+    # 并行探测：串行 8 个候选 × 1.5 秒 = 12 秒，影视壳搜索 10 秒就超时了，
+    # 表现为「这个源一直转圈然后什么都没有」。并发后总耗时压到一个探测超时。
     picked = ''
-    for c in candidates:
-        if _probe_proxy(c):
-            picked = c
-            break
+    try:
+        with ThreadPoolExecutor(max_workers=min(8, len(candidates))) as pool:
+            futures = {pool.submit(_probe_proxy, c): c for c in candidates}
+            for fut in as_completed(futures):
+                try:
+                    if fut.result():
+                        picked = futures[fut]
+                        break
+                except Exception:
+                    continue
+    except Exception:
+        for c in candidates:
+            if _probe_proxy(c):
+                picked = c
+                break
     _AUTO_PROXY_CACHE = picked
     try:
-        json.dump({'p': picked, 't': time.time()}, open(cache_file, 'w', encoding='utf-8'))
+        if cache_file:
+            json.dump({'p': picked, 't': time.time()}, open(cache_file, 'w', encoding='utf-8'))
     except Exception:
         pass
-    print('[pikpak] 自动代理：%s' % (picked or '直连'))
+    _log('[pikpak] 自动代理：%s' % (picked or '直连'))
     return picked
 
 
@@ -390,7 +581,7 @@ class Spider(object):
         self._build_http()
         self._load_state()
         if self.token and self._jwt_expired(self.token):
-            print('[pikpak] token 已过期，请重新获取')
+            _log('[pikpak] token 已过期，请重新获取')
 
     def destroy(self):
         self._save_state()
@@ -430,7 +621,7 @@ class Spider(object):
                             continue
                         ext[k] = v
             except Exception as exc:
-                print('[pikpak] 读取 pikpak-config.json 失败: %s' % exc)
+                _log('[pikpak] 读取 pikpak-config.json 失败: %s' % exc)
         return ext
 
     @staticmethod
@@ -595,33 +786,33 @@ class Spider(object):
 
     # ------------------------------------------------------------------ 状态
     def _load_state(self):
-        base = os.path.dirname(os.path.abspath(__file__)) if '__file__' in globals() else os.getcwd()
-        path = os.path.join(base, 'pikpak-state.json')
-        legacy = os.path.join(tempfile.gettempdir(), 'winbox-pikpak-state.json')
+        # 先定一个「真能写」的目录。安卓上脚本常在只读 assets 里、/tmp 又不存在，
+        # 直接按脚本目录写会让「解析记录 / CSV 导入」每次启动都丢。
+        base = _writable_dir()
+        path = os.path.join(base, 'pikpak-state.json') if base else ''
+        legacy = os.path.join(base, 'winbox-pikpak-state.json') if base else ''
         # 老版本把记录写在临时目录，导致换进程后读不到；这里做一次性迁移
         try:
-            if not os.path.isfile(path) and os.path.isfile(legacy):
+            if path and not os.path.isfile(path) and legacy and os.path.isfile(legacy):
                 with open(legacy, 'r', encoding='utf-8-sig') as fh:
                     old_obj = json.load(fh)
                 if isinstance(old_obj, dict) and (old_obj.get('recent') or old_obj.get('created')):
                     with open(path, 'w', encoding='utf-8') as fh:
                         json.dump(old_obj, fh, ensure_ascii=False)
-                    print('[pikpak] 已迁移 %d 条解析记录' % len(old_obj.get('recent') or []))
+                    _log('[pikpak] 已迁移 %d 条解析记录' % len(old_obj.get('recent') or []))
         except Exception as exc:
-            print('[pikpak] 迁移解析记录失败：%s' % str(exc)[:80])
+            _log('[pikpak] 迁移解析记录失败：%s' % str(exc)[:80])
         try:
-            if os.access(os.path.dirname(path), os.W_OK):
+            if path:
                 self._state_path = path
-            else:
-                self._state_path = legacy
-            if os.path.isfile(self._state_path):
-                with open(self._state_path, 'r', encoding='utf-8-sig') as fh:
-                    obj = json.load(fh)
-                if isinstance(obj, dict):
-                    self._state['recent'] = obj.get('recent') if isinstance(obj.get('recent'), list) else []
-                    self._state['created'] = obj.get('created') if isinstance(obj.get('created'), list) else []
-                    self._state['csv'] = obj.get('csv') if isinstance(obj.get('csv'), list) else []
-                    self._state['paste'] = obj.get('paste') if isinstance(obj.get('paste'), list) else []
+                if os.path.isfile(self._state_path):
+                    with open(self._state_path, 'r', encoding='utf-8-sig') as fh:
+                        obj = json.load(fh)
+                    if isinstance(obj, dict):
+                        self._state['recent'] = obj.get('recent') if isinstance(obj.get('recent'), list) else []
+                        self._state['created'] = obj.get('created') if isinstance(obj.get('created'), list) else []
+                        self._state['csv'] = obj.get('csv') if isinstance(obj.get('csv'), list) else []
+                        self._state['paste'] = obj.get('paste') if isinstance(obj.get('paste'), list) else []
         except Exception:
             pass
         self._dc_load()
@@ -680,19 +871,21 @@ class Spider(object):
                         total += 1
                 if total:
                     self._save_state()
-                print('[pikpak] 已从手机同步 %d 条记录' % total)
+                _log('[pikpak] 已从手机同步 %d 条记录' % total)
             except Exception as exc:
-                print('[pikpak] 同步记录失败：%s' % str(exc)[:80])
+                _log('[pikpak] 同步记录失败：%s' % str(exc)[:80])
             break
 
     def _cache_file(self):
-        base = os.path.dirname(self._state_path) if self._state_path else tempfile.gettempdir()
+        base = os.path.dirname(self._state_path) if self._state_path else _writable_dir()
+        if not base:
+            return ''
         return os.path.join(base, 'pikpak-cache.json')
 
     def _dc_load(self):
         try:
             path = self._cache_file()
-            if os.path.isfile(path):
+            if path and os.path.isfile(path):
                 obj = json.load(open(path, encoding='utf-8'))
                 if isinstance(obj, dict):
                     self._disk_cache = obj
@@ -706,16 +899,19 @@ class Spider(object):
         return None
 
     def _dc_set(self, kind, key, value):
+        path = self._cache_file()
         try:
             bucket = self._disk_cache.setdefault(kind, {})
             bucket[str(key)] = {'v': value, 't': time.time()}
             if len(bucket) > 500:
                 for k in list(bucket)[:200]:
                     bucket.pop(k, None)
-            tmp = self._cache_file() + '.tmp'
+            if not path:
+                return
+            tmp = path + '.tmp'
             with open(tmp, 'w', encoding='utf-8') as fh:
                 json.dump(self._disk_cache, fh, ensure_ascii=False)
-            os.replace(tmp, self._cache_file())
+            os.replace(tmp, path)
         except Exception:
             pass
 
@@ -797,7 +993,7 @@ class Spider(object):
         if not sid:
             raise PikPakError('不是有效的 PikPak 分享链接：%s' % url)
         if pid and _BAD_FOLDER_IDS.get(pid, 0) > time.time():
-            print('[pikpak] 链接里的目录 ID 已失效，直接回退根目录')
+            _log('[pikpak] 链接里的目录 ID 已失效，直接回退根目录')
             pid = ''
         hit = self._share_cache.get(url)
         if hit and time.time() - hit[3] < 600 and hit[0] == sid:
@@ -892,7 +1088,7 @@ class Spider(object):
         except RegionBlocked:
             raise
         except PikPakError as exc:
-            print('[pikpak] 直连 detail 失败，回退分享页取 cookie：%s' % str(exc)[:120])
+            _log('[pikpak] 直连 detail 失败，回退分享页取 cookie：%s' % str(exc)[:120])
         try:
             self.jar.clear()
         except Exception:
@@ -991,7 +1187,7 @@ class Spider(object):
                         try:
                             results.append((futures[fut], fut.result()))
                         except Exception as exc:
-                            print('[pikpak] 子目录读取失败：%s' % str(exc)[:100])
+                            _log('[pikpak] 子目录读取失败：%s' % str(exc)[:100])
             # 按队列顺序处理结果，保证同一次展开的集顺序稳定（并发返回顺序不稳定）
             results.sort(key=lambda pair: batch.index(pair[0]))
             for (fid, pref, ancs, dep), files in results:
@@ -1028,7 +1224,7 @@ class Spider(object):
             return self._share_files(sid, target, pct, deadline)
         except PikPakError as exc:
             if target and '不存在' in str(exc):
-                print('[pikpak] 链接里的目录不可用，回退到分享根目录')
+                _log('[pikpak] 链接里的目录不可用，回退到分享根目录')
                 return self._share_files(sid, '', pct, deadline)
             raise
 
@@ -1080,7 +1276,7 @@ class Spider(object):
                 first = names[0]
                 return first if len(names) == 1 else ('%s 等%d个' % (first, len(names)))
         except Exception as exc:
-            print('[pikpak] 取分享名称失败：%s' % str(exc)[:80])
+            _log('[pikpak] 取分享名称失败：%s' % str(exc)[:80])
         return ''
 
     def _share_medias(self, sid, fid, pct):
@@ -1194,9 +1390,10 @@ class Spider(object):
     # ------------------------------------------------------------------ TG 频道
     def _cache_path(self):
         base = getattr(self, '_state_path', '') or ''
-        if not base:
-            return ''
-        return os.path.join(os.path.dirname(base), 'pikpak-tgcache.json')
+        if base:
+            return os.path.join(os.path.dirname(base), 'pikpak-tgcache.json')
+        d = _writable_dir()
+        return os.path.join(d, 'pikpak-tgcache.json') if d else ''
 
     def _tg_cache_load(self):
         path = self._cache_path()
@@ -1667,7 +1864,7 @@ class Spider(object):
         # 聚合搜索时不要塞「提示卡片」，否则每个关键词都会多出一条无关结果；
         # 使用说明放在首页分类里。
         if errors:
-            print('[pikpak] 搜索未命中：%s' % '；'.join(errors[:3]))
+            _log('[pikpak] 搜索未命中：%s' % '；'.join(errors[:3]))
         return self._page([], page)
 
     def playerContent(self, flag, id, vipFlags):
@@ -1749,20 +1946,26 @@ class Spider(object):
                         entry['n'] = resolved
                         changed = True
         except Exception as exc:
-            print('[pikpak] 补名称超时/失败：%s' % str(exc)[:80])
+            _log('[pikpak] 补名称超时/失败：%s' % str(exc)[:80])
         if changed:
             self._save_state()
 
     def _import_csv(self):
         """先弹系统文件框选 CSV/TXT（中继 /import-csv，APK 的 LocalRelay 原生实现）；
-        中继不可用时手机上退回扫 Download。"""
+        中继不可用时手机上退回扫 Download。
+
+        注意：别的影视壳没有 9978 中继，这里必须先探测再请求 —— 原来直接
+        urlopen(timeout=300)，在非 Win-Box 壳上会白等 5 分钟才失败。
+        """
         obj = None
-        try:
-            req = urllib.request.Request('http://127.0.0.1:9978/import-csv', headers={'Accept': 'application/json'})
-            with urllib.request.urlopen(req, timeout=300) as resp:
-                obj = json.loads(resp.read().decode('utf-8', 'ignore'))
-        except Exception as exc:
-            print('[pikpak] 导入 CSV 失败：%s' % str(exc)[:100])
+        if _relay_ok():
+            try:
+                req = urllib.request.Request(_RELAY_BASE + '/import-csv',
+                                             headers={'Accept': 'application/json'})
+                with urllib.request.urlopen(req, timeout=300) as resp:
+                    obj = json.loads(resp.read().decode('utf-8', 'ignore'))
+            except Exception as exc:
+                _log('[pikpak] 导入 CSV 失败：%s' % str(exc)[:100])
         if isinstance(obj, dict) and obj.get('ok'):
             rows = []
             for it in obj.get('items') or []:
@@ -1782,7 +1985,7 @@ class Spider(object):
         if isinstance(obj, dict) and obj.get('error') == 'canceled':
             return None
         if isinstance(obj, dict) and obj.get('error'):
-            print('[pikpak] 导入 CSV 返回错误：%s' % str(obj.get('error'))[:80])
+            _log('[pikpak] 导入 CSV 返回错误：%s' % str(obj.get('error'))[:80])
         if not MOBILE:
             return None
         # 手机上中继不可用时：退回扫共享存储 Download 里的 CSV/TXT。
@@ -1870,7 +2073,7 @@ class Spider(object):
                         row['n'] = resolved
                         changed = True
         except Exception as exc:
-            print('[pikpak] CSV 补名称超时/失败：%s' % str(exc)[:80])
+            _log('[pikpak] CSV 补名称超时/失败：%s' % str(exc)[:80])
         if changed:
             self._save_state()
 
@@ -2186,7 +2389,7 @@ class Spider(object):
             files = self._share_files_safe(sid, target, pct)
         except PikPakError as exc:
             if target and '不存在' in str(exc):
-                print('[pikpak] 目录 id 不可用，回退到分享根目录')
+                _log('[pikpak] 目录 id 不可用，回退到分享根目录')
                 _BAD_FOLDER_IDS[target] = time.time() + 3600
                 target = ''
                 files = self._share_files_safe(sid, '', pct)
@@ -2205,7 +2408,7 @@ class Spider(object):
             try:
                 inner_files = self._share_files(sid, inner, pct)
             except PikPakError as exc:
-                print('[pikpak] 下钻中断：%s' % str(exc)[:100])
+                _log('[pikpak] 下钻中断：%s' % str(exc)[:100])
                 break
             # 钻进去是空目录就退回：多半是「只有一层壳」，退了才看得见原来那个文件夹
             if not inner_files:
@@ -2215,7 +2418,7 @@ class Spider(object):
             deep_name = str(folders[0].get('name') or '').strip() or deep_name
             hops += 1
         if hops:
-            print('[pikpak] 单链下钻 %d 层 → %s' % (hops, deep_name or target))
+            _log('[pikpak] 单链下钻 %d 层 → %s' % (hops, deep_name or target))
         return target, files, hops, deep_name
 
     def _share_browse(self, data, page):
@@ -2327,17 +2530,19 @@ class Spider(object):
                     })
                 if not out:
                     return
+                if not _relay_ok():
+                    return
                 start = 0
                 for i, x in enumerate(out):
                     if x['n'] == want_name:
                         start = i
                         break
                 body = json.dumps({'title': want_name or '', 'imgs': out, 'start': start}).encode('utf-8')
-                req = urllib.request.Request('http://127.0.0.1:9978/galleryopen', data=body,
+                req = urllib.request.Request(_RELAY_BASE + '/galleryopen', data=body,
                                              headers={'Content-Type': 'application/json'})
                 urllib.request.urlopen(req, timeout=15).read()
             except Exception as exc:
-                print('[pikpak] 打开图片浏览器失败：%s' % str(exc)[:100])
+                _log('[pikpak] 打开图片浏览器失败：%s' % str(exc)[:100])
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -2380,7 +2585,7 @@ class Spider(object):
                 label = iname.replace('$', '＄').replace('#', '＃')
                 episodes.append('%s$%s' % (label, link))
         except Exception as exc:
-            print('[pikpak] 同目录图片列表失败：%s' % str(exc)[:100])
+            _log('[pikpak] 同目录图片列表失败：%s' % str(exc)[:100])
         # 兜底：列表取不到也至少能看当前这一张（用卡片自带的缩略图）。
         if not episodes:
             cur = thumb or direct
@@ -2490,7 +2695,7 @@ class Spider(object):
             text = data.decode('utf-8-sig', 'replace')
             rows = list(_csv.reader(io.StringIO(text)))
         except Exception as exc:
-            print('[pikpak] 表格读取失败：%s' % str(exc)[:160])
+            _log('[pikpak] 表格读取失败：%s' % str(exc)[:160])
             return []
         items = []
         for row in rows:
@@ -2518,6 +2723,14 @@ class Spider(object):
         return items
 
     def _winbox_proxy(self):
+        """返回 (是否在走代理, 代理地址)，只用来决定选「原画」还是「转码」线路。
+
+        Win-Box 会写一个 proxy.json；别的影视壳没有这个文件，但用户可能在
+        源 ext 里配了 proxy，那种情况同样算「代理已开」，否则明明配了代理
+        却按「直连优先原画」来选线，冷门种子的首段会很慢。
+        """
+        if self.proxy:
+            return True, self.proxy
         base = os.path.dirname(os.path.abspath(__file__)) if '__file__' in globals() else os.getcwd()
         for _ in range(6):
             path = os.path.join(base, 'proxy.json')
