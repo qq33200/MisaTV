@@ -188,6 +188,9 @@ def _normalize_share_link(link):
 # 已确认失效的链接内目录 ID：命中后直接回退根目录，省掉一次必失败的 detail 请求
 _BAD_FOLDER_IDS = {}
 
+# 单链自动下钻的最大层数（对齐 PC 端 Win-Box）
+_MAX_DIVE = 5
+
 UA = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
       '(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36')
 # PikPak 分享链接的多种协议/域名写法（http(s)、pikpak://、mypikpak://、www/m 子域）
@@ -805,24 +808,77 @@ class Spider(object):
             return saved[0], saved[1], saved[2]
         pwd = self._share_pwd(url)
         if pwd:
-            # 带提取码：先用 /drive/v1/share 换取 pass_code_token，再走 detail。
-            obj = self._api('/drive/v1/share',
-                            {'share_id': sid, 'pass_code': pwd,
-                             'thumbnail_size': 'SIZE_LARGE', 'limit': 100},
-                            action='GET:/drive/v1/share')
-            state = str(obj.get('share_status') or '')
-            if state and state.upper() != 'OK':
+            # 带提取码：**优先**走 share/detail + pass_code，一步换 token。
+            # 旧路径 /drive/v1/share 在部分网络/风控下会返回 PROHIBITED 或空
+            # pass_code_token，整条「?pwd=」链接就解析不出来；detail 接口同样
+            # 接受 pass_code 参数并直接回 token（实测），更稳也更省一次往返。
+            pct = ''
+            pwd_bad = ''
+            detail_err = ''
+            try:
+                obj = self._api('/drive/v1/share/detail',
+                                {'limit': 100, 'thumbnail_size': 'SIZE_LARGE',
+                                 'order': '3', 'folders_first': 'true',
+                                 'share_id': sid, 'parent_id': pid,
+                                 'pass_code_token': '', 'pass_code': pwd},
+                                action='GET:/drive/v1/share/detail')
+                state = str(obj.get('share_status') or '')
                 text = str(obj.get('share_status_text') or state)
-                raise PikPakError('提取码校验失败（%s）：请检查提取码是否正确' % text)
-            pct = str(obj.get('pass_code_token') or '')
-            if not pct:
-                raise PikPakError('提取码校验成功但没拿到 pass_code_token，请稍后重试')
-            files = [f for f in (obj.get('files') or []) if isinstance(f, dict)]
-            if not obj.get('next_page_token'):
-                self._files_cache[(sid, pid or '', pct)] = (time.time(), files[:self.max_files])
-            self._share_cache[url] = (sid, pid, pct, time.time())
-            self._dc_set('session', url, [sid, pid, pct])
-            return sid, pid, pct
+                if 'PROHIBITED' in state.upper() or '地区' in text:
+                    raise RegionBlocked(
+                        'PikPak 分享接口在当前地区不可用（%s）。'
+                        '请配置 proxy 走代理后重试，例如 '
+                        '{"proxy":"http://127.0.0.1:7890"}' % text)
+                if 'PASS_CODE' in state.upper() and 'ERROR' in state.upper():
+                    pwd_bad = text or state
+                else:
+                    pct = str(obj.get('pass_code_token') or '')
+                    if not pct:
+                        detail_err = '没拿到 pass_code_token（%s）' % (text or '空响应')
+            except RegionBlocked:
+                raise
+            except Exception as exc:
+                if not pwd_bad:
+                    detail_err = str(exc)[:120]
+            if pct:
+                files = [f for f in (obj.get('files') or []) if isinstance(f, dict)]
+                if not obj.get('next_page_token'):
+                    self._files_cache[(sid, pid or '', pct)] = (time.time(), files[:self.max_files])
+                self._share_cache[url] = (sid, pid, pct, time.time())
+                self._dc_set('session', url, [sid, pid, pct])
+                return sid, pid, pct
+            if pwd_bad:
+                raise PikPakError('提取码不对（%s）：请检查链接里的 ?pwd= 是否正确' % pwd_bad)
+            # 回退旧路径：/drive/v1/share 换 token
+            try:
+                obj = self._api('/drive/v1/share',
+                                {'share_id': sid, 'pass_code': pwd,
+                                 'thumbnail_size': 'SIZE_LARGE', 'limit': 100},
+                                action='GET:/drive/v1/share')
+                state = str(obj.get('share_status') or '')
+                text = str(obj.get('share_status_text') or state)
+                if 'PROHIBITED' in state.upper() or '地区' in text:
+                    raise RegionBlocked(
+                        'PikPak 分享接口在当前地区不可用（%s）。'
+                        '请配置 proxy 走代理后重试，例如 '
+                        '{"proxy":"http://127.0.0.1:7890"}' % text)
+                pct = str(obj.get('pass_code_token') or '')
+                if pct:
+                    files = [f for f in (obj.get('files') or []) if isinstance(f, dict)]
+                    if not obj.get('next_page_token'):
+                        self._files_cache[(sid, pid or '', pct)] = (time.time(), files[:self.max_files])
+                    self._share_cache[url] = (sid, pid, pct, time.time())
+                    self._dc_set('session', url, [sid, pid, pct])
+                    return sid, pid, pct
+                detail_err = detail_err or ('提取码校验成功但没拿到 pass_code_token（%s）'
+                                            % (text or '空响应'))
+            except RegionBlocked:
+                raise
+            except PikPakError:
+                raise
+            except Exception as exc:
+                detail_err = detail_err or str(exc)[:120]
+            raise PikPakError('提取码校验失败：%s' % (detail_err or '请稍后重试'))
         # 大多数公开分享不需要先访问分享页；直接调 detail 能省 1.5~2s。
         # 需要提取码/风控的分享再回退去拿 passcode cookie。
         try:
@@ -2117,33 +2173,59 @@ class Spider(object):
                 'vod_content': content, 'vod_remarks': '%d 个视频' % len(videos),
                 'vod_play_from': '$$$'.join(flags), 'vod_play_url': play_url}
 
+    def _share_dive(self, sid, target, pct):
+        """单链自动下钻（对齐 PC 端 Win-Box 客户端的规则）。
+
+        当前目录只有一个文件夹、且没有其它文件，就直接进去，最多 _MAX_DIVE 层；
+        不判断文件夹名（很多分享是「根 → 剧名 → 季 → 视频」的套娃）。
+        出现多个文件夹、或目录里已经有视频/图片就停下，免得跳过用户想选的那一层。
+        与旧实现相比多两条保护：钻进去是空目录会退回（常见「只有一层壳」）、
+        目录 id 失效时回退分享根。返回 (最深目录 id, 文件列表, 层数, 最深目录名)。
+        """
+        try:
+            files = self._share_files_safe(sid, target, pct)
+        except PikPakError as exc:
+            if target and '不存在' in str(exc):
+                print('[pikpak] 目录 id 不可用，回退到分享根目录')
+                _BAD_FOLDER_IDS[target] = time.time() + 3600
+                target = ''
+                files = self._share_files_safe(sid, '', pct)
+            else:
+                raise
+        hops = 0
+        deep_name = ''
+        while hops < _MAX_DIVE:
+            folders = [x for x in files if x.get('kind') == 'drive#folder']
+            others = [x for x in files if x.get('kind') != 'drive#folder']
+            if len(folders) != 1 or others:
+                break
+            inner = str(folders[0].get('id') or '')
+            if not inner or inner == target:
+                break
+            try:
+                inner_files = self._share_files(sid, inner, pct)
+            except PikPakError as exc:
+                print('[pikpak] 下钻中断：%s' % str(exc)[:100])
+                break
+            # 钻进去是空目录就退回：多半是「只有一层壳」，退了才看得见原来那个文件夹
+            if not inner_files:
+                break
+            target = inner
+            files = inner_files
+            deep_name = str(folders[0].get('name') or '').strip() or deep_name
+            hops += 1
+        if hops:
+            print('[pikpak] 单链下钻 %d 层 → %s' % (hops, deep_name or target))
+        return target, files, hops, deep_name
+
     def _share_browse(self, data, page):
         url = str(data.get('u') or '')
         fid = str(data.get('fid') or '')
         if not url:
             return self._page([self._error_item('分享参数缺失，请重新粘贴链接搜索')], page)
         sid, pid, pct = self._open_share(url)
-        target = fid or pid
-        files = self._share_files_safe(sid, target, pct)
-        # 打开分享时，目录里只有一个文件夹、没有其他文件就直接钻进去：
-        # 这一层没有任何可选项，点进去也是唯一选择；链式单文件夹
-        # （根→A→B→视频）最多连钻 5 层，省掉两到三次点按。
-        # 壳文件夹 "PikPak" 也包含在内；多文件夹或有视频时不钻。
-        hops = 0
-        deep_name = ''
-        if not fid:
-            while hops < 5:
-                folders = [x for x in files if x.get('kind') == 'drive#folder']
-                others = [x for x in files if x.get('kind') != 'drive#folder']
-                if len(folders) != 1 or others:
-                    break
-                inner = str(folders[0].get('id') or '')
-                if not inner:
-                    break
-                deep_name = str(folders[0].get('name') or '').strip() or deep_name
-                target = inner
-                files = self._share_files(sid, target, pct)
-                hops += 1
+        # 打开分享时按 PC 端规则自动下钻：链式单文件夹一路进到最深层，省两三次点按。
+        target, files, hops, deep_name = self._share_dive(sid, fid or pid, pct)
         # 记住下钻结果：历史 / CSV 卡片下次直接进最深层，不用从分享根重钻
         self._remember(url, deep_name or ('PikPak 分享 ' + sid[:8]),
                        target if hops else None, deep_name)
@@ -2154,8 +2236,12 @@ class Spider(object):
             'vod_id': 'fld.' + _pack({'u': url, 'fid': target or '',
                                       'n': ('本文件夹' if fid else '整个分享')}),
             'vod_name': '▶ 播放整个文件夹（连播）',
-            'vod_pic': '', 'vod_remarks': '含子目录',
-            'vod_content': '把当前目录及其子目录里的视频按顺序排成剧集，播完自动下一集。',
+            'vod_pic': '',
+            # 下钻成功时直接把结果写在副标题上，用户一眼能看出进到哪一层了
+            'vod_remarks': (('已自动进入 %d 层：%s' % (hops, deep_name[:16]))
+                            if (hops and deep_name) else '含子目录'),
+            'vod_content': ('单链自动下钻了 %d 层，当前目录：%s。\n' % (hops, deep_name) if hops else '') +
+                           '把当前目录及其子目录里的视频按顺序排成剧集，播完自动下一集。',
         })
         for it in files:
             _pre = (str(it.get('_parent') or '') + ' / ') if it.get('_parent') else ''

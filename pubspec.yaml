@@ -20,6 +20,8 @@ dependencies:
   screen_retriever: ^0.2.2
   window_manager: ^0.5.2
   url_launcher: ^6.3.3
+  # Android 播放/加载时保持亮屏（Muse 交接版同款实现）；Windows 仍走 FFI。
+  wakelock_plus: ^1.8.2
   gbk_codec: ^0.4.0
   video_player: ^2.14.1
   fvp: ^0.39.1
