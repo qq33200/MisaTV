@@ -16,10 +16,12 @@ import '../../raw_play.dart';
 /// 拿到地址后按容器分流——mp4/webm 交本机中继给内置播放器，其余拉外部播放器接力。
 ///
 /// [title] 为空时用磁链里的 `dn`（显示名），再退到「磁力播放」。
+/// [fileIndex] 由「磁力文件列表」传入（种子内文件序号）；为空时自动选片。
 Future<void> startMagnetPlay(
   BuildContext context,
   String magnet, {
   String title = '',
+  int? fileIndex,
 }) async {
   final app = AppScope.of(context);
   final torrent = app.torrentPlay;
@@ -62,6 +64,7 @@ Future<void> startMagnetPlay(
     outcome = await torrent.open(
       magnet,
       title: name,
+      fileIndex: fileIndex,
       isCancelled: () => cancelled,
       onProgress: (message) {
         if (!cancelled && !dialogClosed) progress.value = message;

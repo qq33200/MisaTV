@@ -6,7 +6,7 @@ import '../../app.dart';
 import '../../models/vod.dart';
 import '../../services/torrent/magnet.dart';
 import '../../state/app_state.dart';
-import '../pages/player/magnet_play.dart';
+import '../pages/magnet_files_page.dart';
 import 'immersive_category_page.dart';
 import 'immersive_metrics.dart';
 import 'immersive_widgets.dart';
@@ -97,7 +97,14 @@ class _ImmersiveSearchPageState extends State<ImmersiveSearchPage> {
       final magnet = magnetLinkOf(keyword);
       if (magnet != null) {
         _focus.unfocus();
-        unawaited(startMagnetPlay(context, magnet));
+        // 先解析元数据、列出种子内文件，由用户挑一个再播。
+        unawaited(
+          Navigator.of(context).push(
+            MaterialPageRoute<void>(
+              builder: (_) => MagnetFilesPage(magnet: magnet),
+            ),
+          ),
+        );
         return;
       }
     }

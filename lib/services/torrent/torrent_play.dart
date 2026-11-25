@@ -92,6 +92,32 @@ class BtPlayOutcome {
   final String provider;
 }
 
+/// 元数据解析结果：种子内文件清单。
+///
+/// [error] 非空表示解析失败，此时 [files] 为空。
+class BtProbeResult {
+  const BtProbeResult({
+    required this.infoHash,
+    required this.title,
+    required this.files,
+    required this.pieceLength,
+  }) : error = '';
+
+  const BtProbeResult.error(this.error)
+    : infoHash = '',
+      title = '',
+      files = const <TorrentFile>[],
+      pieceLength = 0;
+
+  final String infoHash;
+  final String title;
+  final List<TorrentFile> files;
+  final int pieceLength;
+  final String error;
+
+  bool get ok => error.isEmpty;
+}
+
 class _BtSession {
   _BtSession({
     required this.infoHash,
@@ -417,6 +443,7 @@ class TorrentPlay implements BtStreamSource {
   Future<BtPlayOutcome> open(
     String magnet, {
     String title = '',
+    int? fileIndex,
     void Function(String message)? onProgress,
     bool Function()? isCancelled,
   }) async {
@@ -462,6 +489,7 @@ class TorrentPlay implements BtStreamSource {
       magnet,
       info: info,
       title: title,
+      fileIndex: fileIndex,
       onProgress: onProgress,
       isCancelled: isCancelled,
     );
@@ -480,10 +508,68 @@ class TorrentPlay implements BtStreamSource {
     );
   }
 
+  /// 只解析元数据、返回种子内文件清单，**不选片也不出流**。
+  ///
+  /// 搜索框粘磁链时先走这里：像迅雷那类下载器一样，先把种子里的文件列出来，
+  /// 让用户自己挑要播哪个（或整包下载）。句柄会留在引擎里，随后
+  /// `open(magnet, fileIndex: n)` 直接复用，不必再等一次元数据。
+  Future<BtProbeResult> probe(
+    String magnet, {
+    void Function(String message)? onProgress,
+    bool Function()? isCancelled,
+  }) async {
+    final info = parseMagnet(magnet);
+    if (info == null) {
+      return const BtProbeResult.error('磁力链接格式无法识别');
+    }
+    if (_libtorrent.disabled) {
+      return const BtProbeResult.error('当前平台没有可用的 BT 引擎（libtorrent 插件未注册）');
+    }
+    onProgress?.call('正在解析元数据…');
+    try {
+      final opened = await _libtorrent.openMagnet(
+        magnet,
+        infoHash: info.infoHash,
+        saveDir: _downloadDir,
+        timeout: _metaTimeout,
+      );
+      if (opened == null) {
+        return const BtProbeResult.error('元数据解析失败（可能没有做种或网络不通）');
+      }
+      if (isCancelled?.call() == true) {
+        unawaited(_libtorrent.remove(opened.infoHash));
+        return const BtProbeResult.error('已取消');
+      }
+      final files = <TorrentFile>[
+        for (final f in opened.files)
+          TorrentFile(
+            index: f.index,
+            path: f.path,
+            length: f.length,
+            offset: f.offset,
+          ),
+      ];
+      if (files.isEmpty) {
+        return const BtProbeResult.error('种子里没有文件');
+      }
+      _log('元数据就绪：${info.infoHash.substring(0, 8)} 共 ${files.length} 个文件');
+      return BtProbeResult(
+        infoHash: opened.infoHash,
+        title: (info.displayName).trim(),
+        files: files,
+        pieceLength: opened.pieceLength,
+      );
+    } catch (e) {
+      _log('元数据解析失败 $e');
+      return BtProbeResult.error('元数据解析失败：$e');
+    }
+  }
+
   Future<BtPlayOutcome> _openWithLibtorrent(
     String magnet, {
     required MagnetInfo info,
     required String title,
+    int? fileIndex,
     void Function(String message)? onProgress,
     bool Function()? isCancelled,
   }) async {
@@ -516,7 +602,18 @@ class TorrentPlay implements BtStreamSource {
             offset: file.offset,
           ),
       ];
-      final pick = pickVideoFile(files, preferName: title);
+      // 用户在「磁力文件列表」里挑了具体文件就播那个；没挑（直接粘链接就播）
+      // 才走自动选片。按 TorrentFile.index（种子内序号）匹配，不能用列表下标。
+      TorrentFile? pick;
+      if (fileIndex != null) {
+        for (final f in files) {
+          if (f.index == fileIndex) {
+            pick = f;
+            break;
+          }
+        }
+      }
+      pick ??= pickVideoFile(files, preferName: title);
       if (pick == null) {
         unawaited(_libtorrent.remove(opened.infoHash));
         return const BtPlayOutcome.unsupported('种子内未找到视频文件（可能只是字幕/图片包）');

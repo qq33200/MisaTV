@@ -15,7 +15,7 @@ import '../widgets/poster_card.dart';
 import '../widgets/source_variants_sheet.dart';
 import 'detail_page.dart';
 import 'folder_page.dart';
-import 'player/magnet_play.dart';
+import 'magnet_files_page.dart';
 
 class SearchPage extends StatefulWidget {
   const SearchPage({super.key});
@@ -430,7 +430,14 @@ class _SearchPageState extends State<SearchPage> {
     final magnet = magnetLinkOf(keyword);
     if (magnet != null) {
       _focusNode.unfocus();
-      unawaited(startMagnetPlay(context, magnet));
+      // 先解析元数据、列出种子内文件，由用户挑一个再播（不是拿到链接就起播）。
+      unawaited(
+        Navigator.of(context).push(
+          MaterialPageRoute<void>(
+            builder: (_) => MagnetFilesPage(magnet: magnet),
+          ),
+        ),
+      );
       return;
     }
     final app = AppScope.of(context);
