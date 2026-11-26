@@ -22,6 +22,7 @@ PikPak 网盘源（Win-Box / CatVod type=3 Python 源）
 
 import base64
 import http.cookiejar
+import http.server
 import json
 import os
 import re
@@ -91,6 +92,16 @@ def _relay_ok():
         ok = True
     except Exception:
         ok = False
+    if ok:
+        # 端口开着不等于就是 Win-Box 中继：OK影视+ 里 9978 上跑的是别的服务。
+        # 真正的 Win-Box 中继根路径返回 `MisaTV local relay`，用它确认，
+        # 免得往错误的服务发 /import-csv 然后卡满 300 秒。
+        try:
+            with urllib.request.urlopen(_RELAY_BASE + '/', timeout=0.5) as resp:
+                head = resp.read(64)
+            ok = b'MisaTV local relay' in head
+        except Exception:
+            ok = False
     _relay_alive = ok
     _relay_checked_at = now
     return ok
@@ -207,6 +218,155 @@ def _pick_file_dialog(title='选择包含 PikPak 分享链接的 CSV / TXT 文�
     except Exception as exc:
         _log('[pikpak] 弹选文件框失败：%s' % str(exc)[:100])
         return ''
+
+
+# ---- 内置 CSV 文件选择页（把 APK 的 9978 /import-csv 服务搬进 py）----
+# 任何壳只要能开浏览器访问一个本地地址，就能选文件；不再依赖 SAF / tkinter /
+# 宿主中继。点「CSV 导入」时起服务，浏览器里选完文件 POST 回来，py 直接解析。
+_CSV_PICK = {'server': None, 'thread': None, 'port': 0,
+             'result': None, 'waiter': None, 'idle_until': 0.0}
+
+
+_CSV_PICK_HTML = """<!doctype html><html lang="zh-CN"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PikPak 导入 CSV</title><style>
+*{box-sizing:border-box}body{font-family:system-ui,sans-serif;background:#f4f6f9;
+margin:0;padding:24px;color:#222}h1{font-size:20px;margin:0 0 8px}
+p{font-size:14px;color:#666;line-height:1.6}
+.card{background:#fff;border-radius:12px;padding:20px;margin-top:16px;
+box-shadow:0 2px 10px rgba(0,0,0,.06)}
+input[type=file]{width:100%;padding:12px;border:2px dashed #4a90d9;border-radius:8px;
+background:#f8fbff;font-size:15px}
+button{width:100%;margin-top:14px;padding:13px;border:0;border-radius:8px;
+background:#4a90d9;color:#fff;font-size:16px;font-weight:600}
+#msg{margin-top:14px;font-size:15px;min-height:22px;color:#2b8a3e}
+</style></head><body>
+<h1>PikPak · 导入 CSV</h1>
+<p>选择一个包含 <code>mypikpak.com/s/...</code> 链接的 CSV 或 TXT 文件。
+提取码写在表头「提取码」列，或行内 <code>提取码：xxxx</code> 都能识别。</p>
+<div class="card">
+<input type="file" id="f" accept=".csv,.txt,text/csv,text/plain">
+<button id="go" disabled>导入</button>
+<div id="msg">等待选择文件…</div>
+</div>
+<script>
+var f=document.getElementById('f'),go=document.getElementById('go'),msg=document.getElementById('msg');
+f.onchange=function(){go.disabled=!f.files.length;msg.textContent=f.files.length?('已选：'+f.files[0].name+'（' + f.files[0].size + ' 字节）'):'等待选择文件…';};
+go.onclick=function(){
+  if(!f.files.length)return;
+  var file=f.files[0],r=new FileReader();
+  msg.textContent='正在读取…';
+  r.onload=function(){
+    fetch('/upload',{method:'POST',headers:{'Content-Type':'application/octet-stream',
+      'X-File-Name':encodeURIComponent(file.name)},body:r.result})
+    .then(function(x){return x.json();})
+    .then(function(j){msg.textContent=j.ok?('✓ 导入成功 '+j.count+' 条，可以返回影视壳了。'):('✗ '+(j.error||'失败'));})
+    .catch(function(e){msg.textContent='✗ 上传失败：'+e;});
+  };
+  r.onerror=function(){msg.textContent='✗ 读取文件失败';};
+  r.readAsArrayBuffer(file);
+};
+</script></body></html>"""
+
+
+def _csv_pick_handler_factory(spider):
+    """造一个绑定了 spider 的 HTTP handler，上传后直接解析并写进 spider._state。"""
+    class H(http.server.BaseHTTPRequestHandler):
+        def _send(self, code, body, ctype='text/html; charset=utf-8'):
+            try:
+                self.send_response(code)
+                self.send_header('Content-Type', ctype)
+                self.send_header('Content-Length', str(len(body)))
+                self.send_header('Cache-Control', 'no-store')
+                self.end_headers()
+                self.wfile.write(body)
+            except Exception:
+                pass
+
+        def do_GET(self):
+            if self.path.startswith('/upload'):
+                self._send(200, b'{"ok":false,"error":"POST only"}', 'application/json')
+                return
+            self._send(200, _CSV_PICK_HTML.encode('utf-8'))
+
+        def do_POST(self):
+            try:
+                length = int(self.headers.get('Content-Length') or 0)
+                raw = self.rfile.read(length) if length else b''
+                fname = urllib.parse.unquote(self.headers.get('X-File-Name') or 'upload.csv')
+                text = ''
+                for enc in ('utf-8-sig', 'utf-16', 'gbk', 'latin-1'):
+                    try:
+                        text = raw.decode(enc)
+                        break
+                    except (UnicodeDecodeError, UnicodeError):
+                        continue
+                rows = spider._dedupe_rows(spider._rows_from_text(text))
+                if rows:
+                    spider._state['csv'] = rows[:500]
+                    spider._save_state()
+                _CSV_PICK['result'] = rows
+                _CSV_PICK['idle_until'] = time.time() + 300
+                body = json.dumps({'ok': True, 'count': len(rows)}, ensure_ascii=False).encode('utf-8')
+                self._send(200, body, 'application/json')
+                _log('[pikpak] 内置选文件页导入 %d 条（%s）' % (len(rows), fname))
+            except Exception as exc:
+                _CSV_PICK['result'] = []
+                body = json.dumps({'ok': False, 'error': str(exc)[:120]}, ensure_ascii=False).encode('utf-8')
+                self._send(200, body, 'application/json')
+
+        def log_message(self, fmt, *args):
+            pass
+
+    return H
+
+
+def _start_csv_pick_server(spider):
+    """在 127.0.0.1 上起一个临时 HTTP 服务，返回可访问的地址；失败返回 ''。"""
+    global _CSV_PICK
+    if not MOBILE and os.name == 'nt' and not _relay_ok():
+        # Windows 桌面壳优先用原生文件框，不需要网页
+        pass
+    now = time.time()
+    srv = _CSV_PICK.get('server')
+    if srv is not None and _CSV_PICK.get('idle_until', 0) > now:
+        return 'http://127.0.0.1:%d/import' % _CSV_PICK['port']
+    # 停掉旧服务
+    if srv is not None:
+        try:
+            srv.shutdown()
+            srv.server_close()
+        except Exception:
+            pass
+        _CSV_PICK['server'] = None
+    for port in (9979, 9980, 9981, 18080, 28080):
+        try:
+            httpd = http.server.HTTPServer(('127.0.0.1', port), _csv_pick_handler_factory(spider))
+            break
+        except Exception:
+            continue
+    else:
+        return ''
+    _CSV_PICK['server'] = httpd
+    _CSV_PICK['port'] = port
+    _CSV_PICK['result'] = None
+    _CSV_PICK['idle_until'] = time.time() + 300
+    t = threading.Thread(target=httpd.serve_forever, daemon=True)
+    t.start()
+    _CSV_PICK['thread'] = t
+    return 'http://127.0.0.1:%d/import' % port
+
+
+def _wait_csv_pick(timeout=180):
+    """等浏览器上传完成，返回解析出的行；超时返回 None（不是空列表）。"""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if _CSV_PICK.get('result') is not None:
+            r = _CSV_PICK['result']
+            _CSV_PICK['result'] = None
+            return r
+        time.sleep(0.25)
+    return None
 
 
 # 桌面壳找不到中继时，自动扫这些目录里的 CSV/TXT（用户一般就放下载里）
@@ -1849,17 +2009,33 @@ class Spider(object):
             if vid == 'help':
                 return {'list': [self._help_detail()]}
             if vid == 'csv.reimport':
+                # 先走老路：自家 9978 中继 / 桌面原生文件框
                 got = self._import_csv()
-                if got is None:
-                    note = getattr(self, '_import_note', '') or ''
-                    if note:
-                        return {'list': [self._info_item('没有导入新的 CSV', note)]}
-                    return {'list': [self._info_item('没有导入新的 CSV',
-                                                     '已取消选择，保留了上次导入的列表。\n'
-                                                     '如果一直没弹选文件框，可以把 CSV 放到'
-                                                     '「下载」文件夹，或改用「粘贴链接批量导入」。')]}
-                return {'list': [self._info_item('已导入 %d 条 PikPak 链接' % len(got),
-                                                 '返回「CSV 导入」即可看到这些分享。')]}
+                if got is not None:
+                    return {'list': [self._info_item('已导入 %d 条 PikPak 链接' % len(got),
+                                                     '返回「CSV 导入」即可看到这些分享。')]}
+                # 没拿到文件：安卓影视壳没有 SAF，改用 py 内置的本地选文件页。
+                # 起一个 127.0.0.1 的 HTTP 服务，让用户用浏览器打开选文件，
+                # 上传后 py 直接解析写回 state —— 不依赖宿主、不依赖中继。
+                url = _start_csv_pick_server(self)
+                if url:
+                    item = {
+                        'vod_id': 'csv.pickpage',
+                        'vod_name': '📂 点这里打开选文件页（选完自动导入）',
+                        'vod_pic': '', 'vod_remarks': '本机文件',
+                        'vod_content': ('在本地浏览器打开下面地址，选择 CSV/TXT 文件即可导入：\n'
+                                        '%s\n\n'
+                                        '选完点页面上的「导入」，然后回到「CSV 导入」列表查看。\n'
+                                        '如果打不开，也可以把 CSV 放进 Download 后重进此页。' % url),
+                        'vod_play_from': '选文件',
+                        'vod_play_url': '打开选文件页$' + url,
+                    }
+                    return {'list': [item]}
+                note = getattr(self, '_import_note', '') or ''
+                if note:
+                    return {'list': [self._info_item('没有导入新的 CSV', note)]}
+                return {'list': [self._info_item('没有导入新的 CSV',
+                                                 '未能启动选文件页。可把 CSV 放到 Download 后重进此页。')]}
             if vid == 'csv.clear':
                 self._state['csv'] = []
                 self._save_state()
