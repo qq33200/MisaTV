@@ -96,6 +96,153 @@ def _relay_ok():
     return ok
 
 
+# ---- 桌面壳的选文件框（很多影视壳自带的是精简 Python，没有 tkinter）----
+# 记录「这次到底有没有真的把框弹出来」：弹出来了但返回空 = 用户按了取消；
+# 压根没弹出来 = 环境不支持，可以退化成扫目录。两种情况语义完全不同。
+_DIALOG_STATE = {'shown': False}
+
+
+def _pick_file_dialog(title='选择包含 PikPak 分享链接的 CSV / TXT 文件'):
+    """Windows 原生「打开文件」对话框；不依赖 tkinter，纯 ctypes。
+
+    BieCuiLe 桌面版自带的 Python 3.11 里没有 tkinter（`import tkinter` 直接
+    ModuleNotFoundError），也没有 Win-Box 的 9978 中继，所以原来 PC 上点
+    「重新导入 CSV」什么都不发生。这里直接调 comdlg32.GetOpenFileNameW。
+
+    返回选中的完整路径；用户取消 / 系统不允许弹框时返回 ''（调用方退化
+    成扫下载目录，而不是报错）。
+    """
+    if MOBILE or os.name != 'nt':
+        return ''
+    # 自动化测试 / 无交互场景可以关掉弹框（设 PIKPAK_NO_DIALOG=1）
+    if str(os.environ.get('PIKPAK_NO_DIALOG') or '').strip() not in ('', '0', 'false', 'False'):
+        return ''
+    _DIALOG_STATE['shown'] = False
+    try:
+        import ctypes
+        from ctypes import wintypes
+    except Exception:
+        return ''
+    try:
+        # 桌面宿主每个请求一个线程，弹框前把 COM 拉成 STA，避免个别系统上
+        # 对话框刚建出来就自己关掉。
+        try:
+            ctypes.windll.ole32.OleInitialize(None)
+        except Exception:
+            pass
+
+        class OPENFILENAMEW(ctypes.Structure):
+            _fields_ = [
+                ('lStructSize', wintypes.DWORD),
+                ('hwndOwner', wintypes.HWND),
+                ('hInstance', wintypes.HINSTANCE),
+                ('lpstrFilter', wintypes.LPCWSTR),
+                ('lpstrCustomFilter', wintypes.LPWSTR),
+                ('nMaxCustFilter', wintypes.DWORD),
+                ('nFilterIndex', wintypes.DWORD),
+                ('lpstrFile', wintypes.LPWSTR),
+                ('nMaxFile', wintypes.DWORD),
+                ('lpstrFileTitle', wintypes.LPWSTR),
+                ('nMaxFileTitle', wintypes.DWORD),
+                ('lpstrInitialDir', wintypes.LPCWSTR),
+                ('lpstrTitle', wintypes.LPCWSTR),
+                ('Flags', wintypes.DWORD),
+                ('nFileOffset', wintypes.WORD),
+                ('nFileExtension', wintypes.WORD),
+                ('lpstrDefExt', wintypes.LPCWSTR),
+                ('lCustData', wintypes.LPARAM),
+                ('lpfnHook', wintypes.LPVOID),
+                ('lpTemplateName', wintypes.LPCWSTR),
+                ('pvReserved', wintypes.LPVOID),
+                ('dwReserved', wintypes.DWORD),
+                ('FlagsEx', wintypes.DWORD),
+            ]
+
+        # 过滤器：每段 "说明\0通配\0"，最后再补一个 \0 收尾
+        filter_str = ('CSV / 文本 (*.csv;*.txt)\0*.csv;*.txt\0'
+                      '所有文件 (*.*)\0*.*\0\0')
+        buf = ctypes.create_unicode_buffer(4096)
+        initial = ''
+        for cand in (os.path.join(os.path.expanduser('~'), 'Downloads'),
+                     os.path.join(os.path.expanduser('~'), 'Desktop'),
+                     os.path.expanduser('~')):
+            if os.path.isdir(cand):
+                initial = cand
+                break
+
+        ofn = OPENFILENAMEW()
+        ofn.lStructSize = ctypes.sizeof(OPENFILENAMEW)
+        try:
+            ofn.hwndOwner = ctypes.windll.user32.GetForegroundWindow()
+        except Exception:
+            ofn.hwndOwner = None
+        ofn.lpstrFilter = filter_str
+        ofn.nFilterIndex = 1
+        ofn.lpstrFile = ctypes.cast(buf, ctypes.c_wchar_p)
+        ofn.nMaxFile = len(buf)
+        ofn.lpstrInitialDir = initial or None
+        ofn.lpstrTitle = title
+        ofn.lpstrDefExt = 'csv'
+        # 文件必须存在 / 路径必须存在 / 用资源管理器样式 / 不改工作目录 / 只读勾选
+        ofn.Flags = 0x00001000 | 0x00000800 | 0x00080000 | 0x00000008 | 0x00000004
+        func = ctypes.windll.comdlg32.GetOpenFileNameW
+        func.restype = wintypes.BOOL
+        func.argtypes = [ctypes.POINTER(OPENFILENAMEW)]
+        if not func(ctypes.byref(ofn)):
+            # CommDlgExtendedError()==0 表示用户按了「取消」（框确实弹出来了）；
+            # 非 0 表示对话框根本没建起来（无桌面会话 / 被安全策略拦）。
+            try:
+                err = int(ctypes.windll.comdlg32.CommDlgExtendedError())
+            except Exception:
+                err = 0
+            _DIALOG_STATE['shown'] = (err == 0)
+            if err:
+                _log('[pikpak] 选文件框没能打开，错误码 0x%X' % err)
+            return ''
+        _DIALOG_STATE['shown'] = True
+        path = str(buf.value or '').strip()
+        if path and os.path.isfile(path):
+            return path
+        return ''
+    except Exception as exc:
+        _log('[pikpak] 弹选文件框失败：%s' % str(exc)[:100])
+        return ''
+
+
+# 桌面壳找不到中继时，自动扫这些目录里的 CSV/TXT（用户一般就放下载里）
+def _desktop_csv_dirs():
+    dirs = []
+    try:
+        home = os.path.expanduser('~')
+        for name in ('Downloads', 'Desktop', 'Documents', 'OneDrive/Desktop',
+                     'OneDrive/Documents'):
+            p = os.path.join(home, name.replace('/', os.sep))
+            if os.path.isdir(p):
+                dirs.append(p)
+    except Exception:
+        pass
+    for env_name in ('USERPROFILE', 'HOMEDRIVE'):
+        v = str(os.environ.get(env_name) or '').strip()
+        if v and env_name == 'USERPROFILE':
+            for name in ('Downloads', 'Desktop', 'Documents'):
+                p = os.path.join(v, name)
+                if os.path.isdir(p) and p not in dirs:
+                    dirs.append(p)
+    for extra in (os.getcwd(), _script_dir()):
+        if extra and extra not in dirs and os.path.isdir(extra):
+            dirs.append(extra)
+    return dirs
+
+
+def _script_dir():
+    try:
+        if '__file__' in globals():
+            return os.path.dirname(os.path.abspath(__file__))
+    except Exception:
+        pass
+    return ''
+
+
 # ---- 可写目录探测（安卓壳最容易在这儿翻车）----
 _WRITABLE_DIR = None
 
@@ -537,6 +684,7 @@ class Spider(object):
         self._state_path = ''
         self._state = {'recent': [], 'created': [], 'csv': []}
         self._disk_cache = {}
+        self._import_note = ''
 
     # ------------------------------------------------------------------ 生命周期
     def getName(self):
@@ -1676,6 +1824,13 @@ class Spider(object):
                         'total': len(items), 'list': items}
         except PikPakError as exc:
             return self._page([self._error_item(str(exc))], page)
+        if tid and not tid.startswith(('help', 'csv', 'recent', 'sheet', 'mine')):
+            # 有些壳会把 detail/player 用的 id 当分类传进来（如 v. / fld. / s.）。
+            # 直接返回空列表会让用户看到一片空白，这里给一条能点回去的提示。
+            return self._page([self._info_item(
+                '这个条目不是分类',
+                '这条内容请直接点开播放，不需要在这里展开。\n'
+                '如果一直空白，请回到「外部解析」重新点一次那条分享。')], page)
         return self._page([], page)
 
     def detailContent(self, ids):
@@ -1696,7 +1851,13 @@ class Spider(object):
             if vid == 'csv.reimport':
                 got = self._import_csv()
                 if got is None:
-                    return {'list': [self._info_item('没有导入新的 CSV', '已保留上次导入的列表。')]}
+                    note = getattr(self, '_import_note', '') or ''
+                    if note:
+                        return {'list': [self._info_item('没有导入新的 CSV', note)]}
+                    return {'list': [self._info_item('没有导入新的 CSV',
+                                                     '已取消选择，保留了上次导入的列表。\n'
+                                                     '如果一直没弹选文件框，可以把 CSV 放到'
+                                                     '「下载」文件夹，或改用「粘贴链接批量导入」。')]}
                 return {'list': [self._info_item('已导入 %d 条 PikPak 链接' % len(got),
                                                  '返回「CSV 导入」即可看到这些分享。')]}
             if vid == 'csv.clear':
@@ -1756,6 +1917,17 @@ class Spider(object):
                                                  '「CSV 导入」记录已更新。')]}
             if vid.startswith('s.'):
                 return {'list': [self._share_detail(_b64d(vid[2:]))]}
+            # `n.` = 「分享里的一个目录」。列表里带 vod_tag=folder 时，规范的壳会
+            # 走 categoryContent 继续浏览；但很多壳（BieCuiLe / 部分 TVBox 分支）
+            # 不认 vod_tag，直接把这条丢进 detailContent。原来这里没有分支，
+            # 命中最后那句 `return {'list': []}`，表现就是「搜到点进去一片空白」。
+            # 这里退回「把该目录做成一个可连播的节目」，保证无论壳怎么点都能播。
+            if vid.startswith('n.'):
+                data = _unpack(vid[2:])
+                if data.get('fid'):
+                    return {'list': [self._folder_detail(data)]}
+                # 没指定子目录（搜索结果那一条）→ 整个分享
+                return {'list': [self._share_detail(str(data.get('u') or ''))]}
             if vid.startswith('fld.'):
                 return {'list': [self._folder_detail(_unpack(vid[4:]))]}
             if vid.startswith('v.'):
@@ -1950,13 +2122,105 @@ class Spider(object):
         if changed:
             self._save_state()
 
+    def _rows_from_text(self, text):
+        """从 CSV/TXT 文本里抠出 PikPak 分享链接（一列链接、一列标题都认）。
+
+        真实 CSV 的提取码通常写在**表头**里（`标题,链接,提取码`），每行只留
+        一个 `zekk`。只按行内「提取码：xxx」找会漏掉这种，于是先定位表头列。
+        """
+        lines = str(text or '').splitlines()
+        pwd_col = -1
+        name_col = -1
+        pwd_keys = ('提取码', '密码', 'passcode', 'pass_code', 'pwd', 'password')
+        name_keys = ('标题', '名称', '片名', '剧名', 'title', 'name')
+        for line in lines[:6]:
+            parts = [x.strip().strip('"') for x in re.split(r'[,;\t]', line)]
+            if len(parts) < 2:
+                continue
+            low = [p.lower() for p in parts]
+            hit_pwd = [i for i, p in enumerate(low) if any(k in p for k in pwd_keys)]
+            if not hit_pwd:
+                continue
+            pwd_col = hit_pwd[0]
+            for i, p in enumerate(low):
+                if any(k in p for k in name_keys):
+                    name_col = i
+                    break
+            break
+
+        found = []
+        for line in lines:
+            mm = re.search(_SHARE_LINK_RE, line, re.I)
+            if not mm:
+                continue
+            url = _normalize_share_link(mm.group(0))
+            parts = [x.strip().strip('"') for x in re.split(r'[,;\t]', line)]
+            # 提取码：优先看行内「提取码：xxxx」，没有再按表头定位的那一列取。
+            pwd = self._share_pwd(line)
+            if not pwd and 0 <= pwd_col < len(parts):
+                cand = parts[pwd_col]
+                if cand and re.fullmatch(r'[A-Za-z0-9]{4,8}', cand) and 'pikpak' not in cand.lower():
+                    pwd = cand
+            if pwd and 'pwd=' not in url and 'pass_code=' not in url:
+                url += ('&' if '?' in url else '?') + 'pwd=' + urllib.parse.quote(pwd)
+            # 标题：表头指明了就用那一列，否则取最长的一段非链接文字。
+            name = ''
+            if 0 <= name_col < len(parts):
+                cand = parts[name_col]
+                if cand and 'pikpak' not in cand.lower() and not re.search(r'[/\\]s/', cand):
+                    name = cand
+            if not name:
+                for part in parts:
+                    if not part or 'pikpak' in part.lower():
+                        continue
+                    if len(part) > len(name):
+                        name = part
+            found.append({'u': url, 'n': name[:120]})
+        return found
+
+    @staticmethod
+    def _dedupe_rows(rows):
+        uniq = []
+        seen = set()
+        for it in rows or []:
+            url = str(it.get('u') or '')
+            if not url or url in seen:
+                continue
+            seen.add(url)
+            uniq.append(it)
+        return uniq
+
+    def _rows_from_file(self, path):
+        """读一个 CSV/TXT 文件并返回链接行；编码按常见顺序试，读不了就返回 []。"""
+        raw = ''
+        for enc in ('utf-8-sig', 'utf-16', 'gbk', 'latin-1'):
+            try:
+                with open(path, 'r', encoding=enc, errors='strict') as fh:
+                    raw = fh.read()
+                break
+            except (UnicodeDecodeError, UnicodeError):
+                continue
+            except Exception as exc:
+                _log('[pikpak] 读文件失败（%s）：%s' % (enc, str(exc)[:60]))
+                return []
+        if not raw:
+            return []
+        return self._rows_from_text(raw)
+
     def _import_csv(self):
-        """先弹系统文件框选 CSV/TXT（中继 /import-csv，APK 的 LocalRelay 原生实现）；
-        中继不可用时手机上退回扫 Download。
+        """导入 CSV/TXT 里的 PikPak 分享链接。
+
+        三条路，按壳的能力依次退：
+          1. Win-Box 自家 9978 中继 `/import-csv`（APK 里的 LocalRelay，走 SAF 弹框）；
+          2. Windows 桌面壳：ctypes 直接调 comdlg32.GetOpenFileNameW 弹原生框
+             —— BieCuiLe 这类自带精简 Python 的壳**没有 tkinter**，也不带中继，
+             原来 PC 上点「重新导入 CSV」什么都不发生就是这个原因；
+          3. 实在弹不出框（无桌面 / 权限受限）：扫 下载/桌面/文档 和脚本目录。
 
         注意：别的影视壳没有 9978 中继，这里必须先探测再请求 —— 原来直接
         urlopen(timeout=300)，在非 Win-Box 壳上会白等 5 分钟才失败。
         """
+        self._import_note = ''
         obj = None
         if _relay_ok():
             try:
@@ -1986,57 +2250,75 @@ class Spider(object):
             return None
         if isinstance(obj, dict) and obj.get('error'):
             _log('[pikpak] 导入 CSV 返回错误：%s' % str(obj.get('error'))[:80])
+
+        # ---- 2. Windows 桌面壳：直接弹原生选文件框 ----
         if not MOBILE:
-            return None
-        # 手机上中继不可用时：退回扫共享存储 Download 里的 CSV/TXT。
-        if MOBILE:
-            found = []
-            csv_bases = ['/storage/emulated/0/Download', '/sdcard/Download',
-                         '/storage/emulated/0', os.path.dirname(os.path.abspath(__file__))]
-            ext_storage = str(os.environ.get('EXTERNAL_STORAGE') or os.environ.get('ANDROID_STORAGE') or '').strip()
-            if ext_storage:
-                csv_bases.insert(0, os.path.join(ext_storage, 'Download'))
-            for base in csv_bases:
+            path = _pick_file_dialog()
+            if path:
+                rows = self._dedupe_rows(self._rows_from_file(path))
+                if not rows:
+                    self._import_note = ('选中的文件里没找到 PikPak 分享链接：\n%s\n'
+                                         '需要 mypikpak.com/s/xxxx 这种地址。'
+                                         % os.path.basename(path))
+                    _log('[pikpak] %s 里没有分享链接' % path)
+                    return None
+                self._state['csv'] = rows[:500]
+                self._save_state()
+                _log('[pikpak] 已从 %s 导入 %d 条' % (os.path.basename(path), len(rows)))
+                return rows
+            # 弹框成功但用户按了「取消」→ 保持原来的列表，不要偷偷扫目录
+            if _DIALOG_STATE.get('shown'):
+                return None
+            # 弹不出框（没有桌面会话等）→ 退化成扫常见目录
+            rows = []
+            for base in _desktop_csv_dirs():
                 try:
                     for fn in sorted(os.listdir(base)):
                         if not fn.lower().endswith(('.csv', '.txt')):
                             continue
                         full = os.path.join(base, fn)
-                        if not os.path.isfile(full):
-                            continue
-                        raw2 = open(full, encoding='utf-8-sig', errors='ignore').read()
-                        for line in raw2.splitlines():
-                            mm = re.search(_SHARE_LINK_RE, line, re.I)
-                            if not mm:
-                                continue
-                            url3 = _normalize_share_link(mm.group(0))
-                            # 提取码写在行里另一处（「提取码：xxxx」或单独一列）：补到链接上。
-                            if 'pwd=' not in url3 and 'pass_code=' not in url3:
-                                pwd = self._share_pwd(line)
-                                if pwd:
-                                    url3 += ('&' if '?' in url3 else '?') + 'pwd=' + urllib.parse.quote(pwd)
-                            parts = [x.strip().strip('"') for x in re.split(r'[,;\t]', line)]
-                            nm = ''
-                            for part in parts:
-                                if not part or 'pikpak' in part.lower():
-                                    continue
-                                if len(part) > len(nm):
-                                    nm = part
-                            found.append({'u': url3, 'n': nm[:120]})
+                        if os.path.isfile(full):
+                            rows.extend(self._rows_from_file(full))
+                    if rows:
+                        break
                 except Exception:
                     continue
-                if found:
-                    break
-            uniq = []
-            seen = set()
-            for it in found:
-                if it['u'] in seen:
-                    continue
-                seen.add(it['u'])
-                uniq.append(it)
-            self._state['csv'] = uniq[:500]
+            rows = self._dedupe_rows(rows)
+            if not rows:
+                self._import_note = ('没能选中文件。\n'
+                                     '可以手动把 CSV 放到「下载」文件夹后重试，'
+                                     '或者在搜索框一次粘贴多个分享链接，'
+                                     '点结果顶部的「导入全部」。')
+                return None
+            self._state['csv'] = rows[:500]
             self._save_state()
-            return uniq
+            return rows
+
+        # ---- 3. 手机上中继不可用：扫共享存储 Download 里的 CSV/TXT ----
+        found = []
+        csv_bases = ['/storage/emulated/0/Download', '/sdcard/Download',
+                     '/storage/emulated/0', _script_dir()]
+        ext_storage = str(os.environ.get('EXTERNAL_STORAGE') or os.environ.get('ANDROID_STORAGE') or '').strip()
+        if ext_storage:
+            csv_bases.insert(0, os.path.join(ext_storage, 'Download'))
+        for base in csv_bases:
+            if not base:
+                continue
+            try:
+                for fn in sorted(os.listdir(base)):
+                    if not fn.lower().endswith(('.csv', '.txt')):
+                        continue
+                    full = os.path.join(base, fn)
+                    if os.path.isfile(full):
+                        found.extend(self._rows_from_file(full))
+            except Exception:
+                continue
+            if found:
+                break
+        uniq = self._dedupe_rows(found)
+        self._state['csv'] = uniq[:500]
+        self._save_state()
+        return uniq
 
     def _fill_csv_names(self, budget=8.0, workers=6, limit=24):
         """CSV 里只有链接时，按 PikPak 真实名称补齐（并发 + 总超时），补到就写回。"""
