@@ -5,6 +5,7 @@ import '../../models/site_config.dart';
 import 'empty_state.dart';
 import 'glass.dart';
 
+// 本文件只提供通用技术实现：不因名称、标题或描述判定内容用途，判断权归使用者。
 Future<void> showSourcePicker(BuildContext context) async {
   await showModalBottomSheet(
     context: context,
@@ -60,8 +61,7 @@ class _SourcePickerSheetState extends State<_SourcePickerSheet> {
                   site.key.toLowerCase().contains(query))
                 site,
           ];
-    // 宽屏（横屏/平板/桌面）走左右两栏：左订阅源、右站点；窄屏维持单列。
-    final twoColumn = MediaQuery.sizeOf(context).width >= 480;
+    // 订阅源与站点始终左右并排；窄屏时由布局宽度自适应压缩。
     return SafeArea(
       child: Padding(
         padding: const EdgeInsets.fromLTRB(20, 4, 20, 20),
@@ -81,70 +81,37 @@ class _SourcePickerSheetState extends State<_SourcePickerSheet> {
             ),
             const SizedBox(height: 12),
             // 站点一多就翻半天：按名称边输边筛，可同时匹配 key。
-            if (sites.isNotEmpty && !twoColumn) ...[
-              TextField(
-                controller: _search,
-                onChanged: (value) => setState(() => _query = value),
-                textInputAction: TextInputAction.search,
-                decoration: InputDecoration(
-                  isDense: true,
-                  hintText: '搜索站点名称',
-                  prefixIcon: const Icon(Icons.search_rounded, size: 20),
-                  suffixIcon: _query.isEmpty
-                      ? null
-                      : IconButton(
-                          tooltip: '清除',
-                          icon: const Icon(Icons.close_rounded, size: 18),
-                          onPressed: () {
-                            _search.clear();
-                            setState(() => _query = '');
-                          },
+            Flexible(
+              child: SizedBox(
+                // 限制弹层高度，低矮横屏设备也留出滚动空间。
+                height: (MediaQuery.sizeOf(context).height - 180)
+                    .clamp(220.0, 420.0)
+                    .toDouble(),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    // 左栏：订阅源（点播订阅）切换
+                    if (app.vodProfiles.isNotEmpty) ...[
+                      SizedBox(
+                        width: (MediaQuery.sizeOf(context).width * 0.34)
+                            .clamp(112.0, 220.0)
+                            .toDouble(),
+                        child: _ProfileColumn(
+                          activeId: app.activeProfileId ?? '',
+                          options: [
+                            for (final p in app.vodProfiles) (p.id, p.name),
+                          ],
+                          onTap: app.activateProfile,
                         ),
-                ),
-              ),
-              const SizedBox(height: 12),
-            ],
-            if (sites.isEmpty)
-              const EmptyState(
-                icon: Icons.source_outlined,
-                title: '还没有站点',
-                message: '先导入一份 TVBox 订阅配置',
-                compact: true,
-              )
-            else if (filtered.isEmpty)
-              const EmptyState(
-                icon: Icons.search_off_rounded,
-                title: '没有匹配的站点',
-                message: '换个关键词试试',
-                compact: true,
-              )
-            else if (twoColumn)
-              Flexible(
-                child: SizedBox(
-                  // 两栏固定总高，左栏订阅源可滚、右栏站点可滚。
-                  height: 420,
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      // 左栏：订阅源（点播订阅）切换
-                      if (app.vodProfiles.isNotEmpty) ...[
-                        SizedBox(
-                          width: 220,
-                          child: _ProfileColumn(
-                            activeId: app.activeProfileId ?? '',
-                            options: [
-                              for (final p in app.vodProfiles) (p.id, p.name),
-                            ],
-                            onTap: app.activateProfile,
-                          ),
-                        ),
-                        const SizedBox(width: 14),
-                      ],
-                      // 右栏：站点列表（搜索 + 纵向列表）
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
+                      ),
+                      const SizedBox(width: 10),
+                    ],
+                    // 右栏：搜索和站点列表；无匹配结果时仍显示搜索框和左栏。
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          if (sites.isNotEmpty) ...[
                             TextField(
                               controller: _search,
                               onChanged: (value) =>
@@ -154,13 +121,17 @@ class _SourcePickerSheetState extends State<_SourcePickerSheet> {
                                 isDense: true,
                                 hintText: '搜索站点名称',
                                 prefixIcon: const Icon(
-                                    Icons.search_rounded, size: 20),
+                                  Icons.search_rounded,
+                                  size: 20,
+                                ),
                                 suffixIcon: _query.isEmpty
                                     ? null
                                     : IconButton(
                                         tooltip: '清除',
                                         icon: const Icon(
-                                            Icons.close_rounded, size: 18),
+                                          Icons.close_rounded,
+                                          size: 18,
+                                        ),
                                         onPressed: () {
                                           _search.clear();
                                           setState(() => _query = '');
@@ -169,89 +140,68 @@ class _SourcePickerSheetState extends State<_SourcePickerSheet> {
                               ),
                             ),
                             const SizedBox(height: 10),
-                            Expanded(
-                              child: SingleChildScrollView(
-                                child: Column(
-                                  children: [
-                                    for (var i = 0;
-                                        i < filtered.length;
-                                        i++) ...[
-                                      if (i > 0) const SizedBox(height: 8),
-                                      _SiteTile(
-                                        key: filtered[i].key ==
-                                                activeSite?.key
-                                            ? _activeKey
-                                            : null,
-                                        site: filtered[i],
-                                        active:
-                                            filtered[i].key == activeSite?.key,
-                                        usable:
-                                            app.isSiteUsable(filtered[i]),
-                                        onTap: app.isSiteUsable(filtered[i])
-                                            ? () async {
-                                                await app.setActiveSite(
-                                                    filtered[i].key);
-                                                if (context.mounted) {
-                                                  Navigator.of(context).pop();
-                                                }
-                                              }
-                                            : null,
-                                      ),
-                                    ],
-                                  ],
-                                ),
-                              ),
-                            ),
                           ],
-                        ),
+                          Expanded(
+                            child: sites.isEmpty
+                                ? const EmptyState(
+                                    icon: Icons.source_outlined,
+                                    title: '还没有站点',
+                                    message: '先导入一份 TVBox 订阅配置',
+                                    compact: true,
+                                  )
+                                : filtered.isEmpty
+                                ? const EmptyState(
+                                    icon: Icons.search_off_rounded,
+                                    title: '没有匹配的站点',
+                                    message: '换个关键词试试',
+                                    compact: true,
+                                  )
+                                : SingleChildScrollView(
+                                    child: Column(
+                                      children: [
+                                        for (
+                                          var i = 0;
+                                          i < filtered.length;
+                                          i++
+                                        ) ...[
+                                          if (i > 0) const SizedBox(height: 8),
+                                          _SiteTile(
+                                            key:
+                                                filtered[i].key ==
+                                                    activeSite?.key
+                                                ? _activeKey
+                                                : null,
+                                            site: filtered[i],
+                                            active:
+                                                filtered[i].key ==
+                                                activeSite?.key,
+                                            usable: app.isSiteUsable(
+                                              filtered[i],
+                                            ),
+                                            onTap: app.isSiteUsable(filtered[i])
+                                                ? () async {
+                                                    await app.setActiveSite(
+                                                      filtered[i].key,
+                                                    );
+                                                    if (context.mounted) {
+                                                      Navigator.of(context)
+                                                          .pop();
+                                                    }
+                                                  }
+                                                : null,
+                                          ),
+                                        ],
+                                      ],
+                                    ),
+                                  ),
+                          ),
+                        ],
                       ),
-                    ],
-                  ),
-                ),
-              )
-            else
-              Flexible(
-                // 用 SingleChildScrollView + Column 一次性挂载所有站点：ListView
-                // 的 itemBuilder / children 首屏只建可见项，当前站点太靠下时
-                // GlobalKey 没有 context，无法在打开后定位到它。
-                child: SingleChildScrollView(
-                  child: Column(
-                    children: [
-                      // 快捷切换**点播订阅**：不用再绕去设置页。
-                      if (app.vodProfiles.isNotEmpty) ...[
-                        _PickerChips(
-                          label: '点播订阅',
-                          activeId: app.activeProfileId ?? '',
-                          options: [
-                            for (final p in app.vodProfiles) (p.id, p.name),
-                          ],
-                          onTap: app.activateProfile,
-                        ),
-                        const SizedBox(height: 10),
-                      ],
-                      for (var i = 0; i < filtered.length; i++) ...[
-                        if (i > 0) const SizedBox(height: 8),
-                        _SiteTile(
-                          key: filtered[i].key == activeSite?.key
-                              ? _activeKey
-                              : null,
-                          site: filtered[i],
-                          active: filtered[i].key == activeSite?.key,
-                          usable: app.isSiteUsable(filtered[i]),
-                          onTap: app.isSiteUsable(filtered[i])
-                              ? () async {
-                                  await app.setActiveSite(filtered[i].key);
-                                  if (context.mounted) {
-                                    Navigator.of(context).pop();
-                                  }
-                                }
-                              : null,
-                        ),
-                      ],
-                    ],
-                  ),
+                    ),
+                  ],
                 ),
               ),
+            ),
           ],
         ),
       ),
@@ -259,7 +209,7 @@ class _SourcePickerSheetState extends State<_SourcePickerSheet> {
   }
 }
 
-/// 两栏布局的左栏：订阅源纵向列表（宽屏时替代 Wrap 芯片）。
+/// 两栏布局的左栏：订阅源纵向列表。
 class _ProfileColumn extends StatelessWidget {
   const _ProfileColumn({
     required this.activeId,
@@ -356,8 +306,11 @@ class _ProfileTile extends StatelessWidget {
                 ),
               ),
               if (active)
-                Icon(Icons.check_circle_rounded,
-                    color: theme.colorScheme.primary, size: 18),
+                Icon(
+                  Icons.check_circle_rounded,
+                  color: theme.colorScheme.primary,
+                  size: 18,
+                ),
             ],
           ),
         ),
@@ -366,54 +319,14 @@ class _ProfileTile extends StatelessWidget {
   }
 }
 
-/// 选源弹层顶部的订阅快捷切换。
-class _PickerChips extends StatelessWidget {
-  const _PickerChips({
-    required this.label,
-    required this.options,
-    required this.activeId,
-    required this.onTap,
-  });
-
-  final String label;
-
-  /// `(订阅 id, 显示名)`
-  final List<(String, String)> options;
-  final String activeId;
-  final Future<void> Function(String id) onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          label,
-          style: theme.textTheme.labelSmall?.copyWith(
-            color: theme.colorScheme.onSurface.withValues(alpha: 0.76),
-          ),
-        ),
-        const SizedBox(height: 6),
-        Wrap(
-          spacing: 8,
-          runSpacing: 8,
-          children: [
-            for (final option in options)
-              ChoiceChip(
-                label: Text(option.$2),
-                selected: activeId == option.$1,
-                onSelected: (_) => onTap(option.$1),
-              ),
-          ],
-        ),
-      ],
-    );
-  }
-}
-
 class _SiteTile extends StatelessWidget {
-  const _SiteTile({super.key, required this.site, required this.active, required this.usable, this.onTap});
+  const _SiteTile({
+    super.key,
+    required this.site,
+    required this.active,
+    required this.usable,
+    this.onTap,
+  });
   final SourceBean site;
   final bool active;
   final bool usable;
@@ -436,14 +349,18 @@ class _SiteTile extends StatelessWidget {
               height: 38,
               alignment: Alignment.center,
               decoration: BoxDecoration(
-                color: theme.colorScheme.primary.withValues(alpha: usable ? 0.16 : 0.06),
+                color: theme.colorScheme.primary.withValues(
+                  alpha: usable ? 0.16 : 0.06,
+                ),
                 borderRadius: BorderRadius.circular(12),
               ),
               child: Text(
                 site.displayName.characters.first,
                 style: TextStyle(
                   fontWeight: FontWeight.w800,
-                  color: usable ? theme.colorScheme.primary : theme.disabledColor,
+                  color: usable
+                      ? theme.colorScheme.primary
+                      : theme.disabledColor,
                 ),
               ),
             ),
@@ -459,7 +376,9 @@ class _SiteTile extends StatelessWidget {
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: theme.textTheme.labelSmall?.copyWith(
-                      color: theme.colorScheme.onSurface.withValues(alpha: 0.70),
+                      color: theme.colorScheme.onSurface.withValues(
+                        alpha: 0.70,
+                      ),
                     ),
                   ),
                   if (!usable)
@@ -467,13 +386,19 @@ class _SiteTile extends StatelessWidget {
                       site.unsupportedReason,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: theme.textTheme.labelSmall?.copyWith(color: theme.colorScheme.error),
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: theme.colorScheme.error,
+                      ),
                     ),
                 ],
               ),
             ),
             if (active)
-              Icon(Icons.check_circle_rounded, color: theme.colorScheme.primary, size: 22)
+              Icon(
+                Icons.check_circle_rounded,
+                color: theme.colorScheme.primary,
+                size: 22,
+              )
             else if (!usable)
               Icon(Icons.block_rounded, color: theme.disabledColor, size: 20),
           ],
