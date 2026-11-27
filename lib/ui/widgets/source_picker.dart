@@ -60,6 +60,8 @@ class _SourcePickerSheetState extends State<_SourcePickerSheet> {
                   site.key.toLowerCase().contains(query))
                 site,
           ];
+    // 宽屏（横屏/平板/桌面）走左右两栏：左订阅源、右站点；窄屏维持单列。
+    final twoColumn = MediaQuery.sizeOf(context).width >= 480;
     return SafeArea(
       child: Padding(
         padding: const EdgeInsets.fromLTRB(20, 4, 20, 20),
@@ -78,20 +80,8 @@ class _SourcePickerSheetState extends State<_SourcePickerSheet> {
               ],
             ),
             const SizedBox(height: 12),
-            // 快捷切换**点播订阅**：不用再绕去设置页。
-            if (app.vodProfiles.isNotEmpty) ...[
-              _PickerChips(
-                label: '点播订阅',
-                activeId: app.activeProfileId ?? '',
-                options: [
-                  for (final p in app.vodProfiles) (p.id, p.name),
-                ],
-                onTap: app.activateProfile,
-              ),
-              const SizedBox(height: 10),
-            ],
             // 站点一多就翻半天：按名称边输边筛，可同时匹配 key。
-            if (sites.isNotEmpty) ...[
+            if (sites.isNotEmpty && !twoColumn) ...[
               TextField(
                 controller: _search,
                 onChanged: (value) => setState(() => _query = value),
@@ -128,6 +118,97 @@ class _SourcePickerSheetState extends State<_SourcePickerSheet> {
                 message: '换个关键词试试',
                 compact: true,
               )
+            else if (twoColumn)
+              Flexible(
+                child: SizedBox(
+                  // 两栏固定总高，左栏订阅源可滚、右栏站点可滚。
+                  height: 420,
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      // 左栏：订阅源（点播订阅）切换
+                      if (app.vodProfiles.isNotEmpty) ...[
+                        SizedBox(
+                          width: 220,
+                          child: _ProfileColumn(
+                            activeId: app.activeProfileId ?? '',
+                            options: [
+                              for (final p in app.vodProfiles) (p.id, p.name),
+                            ],
+                            onTap: app.activateProfile,
+                          ),
+                        ),
+                        const SizedBox(width: 14),
+                      ],
+                      // 右栏：站点列表（搜索 + 纵向列表）
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            TextField(
+                              controller: _search,
+                              onChanged: (value) =>
+                                  setState(() => _query = value),
+                              textInputAction: TextInputAction.search,
+                              decoration: InputDecoration(
+                                isDense: true,
+                                hintText: '搜索站点名称',
+                                prefixIcon: const Icon(
+                                    Icons.search_rounded, size: 20),
+                                suffixIcon: _query.isEmpty
+                                    ? null
+                                    : IconButton(
+                                        tooltip: '清除',
+                                        icon: const Icon(
+                                            Icons.close_rounded, size: 18),
+                                        onPressed: () {
+                                          _search.clear();
+                                          setState(() => _query = '');
+                                        },
+                                      ),
+                              ),
+                            ),
+                            const SizedBox(height: 10),
+                            Expanded(
+                              child: SingleChildScrollView(
+                                child: Column(
+                                  children: [
+                                    for (var i = 0;
+                                        i < filtered.length;
+                                        i++) ...[
+                                      if (i > 0) const SizedBox(height: 8),
+                                      _SiteTile(
+                                        key: filtered[i].key ==
+                                                activeSite?.key
+                                            ? _activeKey
+                                            : null,
+                                        site: filtered[i],
+                                        active:
+                                            filtered[i].key == activeSite?.key,
+                                        usable:
+                                            app.isSiteUsable(filtered[i]),
+                                        onTap: app.isSiteUsable(filtered[i])
+                                            ? () async {
+                                                await app.setActiveSite(
+                                                    filtered[i].key);
+                                                if (context.mounted) {
+                                                  Navigator.of(context).pop();
+                                                }
+                                              }
+                                            : null,
+                                      ),
+                                    ],
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              )
             else
               Flexible(
                 // 用 SingleChildScrollView + Column 一次性挂载所有站点：ListView
@@ -136,6 +217,18 @@ class _SourcePickerSheetState extends State<_SourcePickerSheet> {
                 child: SingleChildScrollView(
                   child: Column(
                     children: [
+                      // 快捷切换**点播订阅**：不用再绕去设置页。
+                      if (app.vodProfiles.isNotEmpty) ...[
+                        _PickerChips(
+                          label: '点播订阅',
+                          activeId: app.activeProfileId ?? '',
+                          options: [
+                            for (final p in app.vodProfiles) (p.id, p.name),
+                          ],
+                          onTap: app.activateProfile,
+                        ),
+                        const SizedBox(height: 10),
+                      ],
                       for (var i = 0; i < filtered.length; i++) ...[
                         if (i > 0) const SizedBox(height: 8),
                         _SiteTile(
@@ -160,6 +253,113 @@ class _SourcePickerSheetState extends State<_SourcePickerSheet> {
                 ),
               ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// 两栏布局的左栏：订阅源纵向列表（宽屏时替代 Wrap 芯片）。
+class _ProfileColumn extends StatelessWidget {
+  const _ProfileColumn({
+    required this.activeId,
+    required this.options,
+    required this.onTap,
+  });
+
+  /// `(订阅 id, 显示名)`
+  final List<(String, String)> options;
+  final String activeId;
+  final Future<void> Function(String id) onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return GlassPanel(
+      padding: const EdgeInsets.all(8),
+      borderRadius: 18,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(8, 4, 8, 8),
+            child: Text(
+              '订阅源',
+              style: theme.textTheme.labelSmall?.copyWith(
+                color: theme.colorScheme.onSurface.withValues(alpha: 0.76),
+              ),
+            ),
+          ),
+          Expanded(
+            child: SingleChildScrollView(
+              child: Column(
+                children: [
+                  for (final option in options) ...[
+                    _ProfileTile(
+                      id: option.$1,
+                      name: option.$2,
+                      active: activeId == option.$1,
+                      onTap: () => onTap(option.$1),
+                    ),
+                    const SizedBox(height: 6),
+                  ],
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 订阅源单行条目，样式对齐 [_SiteTile] 但更紧凑。
+class _ProfileTile extends StatelessWidget {
+  const _ProfileTile({
+    required this.id,
+    required this.name,
+    required this.active,
+    required this.onTap,
+  });
+
+  final String id;
+  final String name;
+  final bool active;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Material(
+      color: active
+          ? theme.colorScheme.primary.withValues(alpha: 0.14)
+          : theme.colorScheme.onSurface.withValues(alpha: 0.03),
+      borderRadius: BorderRadius.circular(12),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  name,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    fontWeight: active ? FontWeight.w700 : FontWeight.w500,
+                    color: active
+                        ? theme.colorScheme.primary
+                        : theme.colorScheme.onSurface,
+                  ),
+                ),
+              ),
+              if (active)
+                Icon(Icons.check_circle_rounded,
+                    color: theme.colorScheme.primary, size: 18),
+            ],
+          ),
         ),
       ),
     );
